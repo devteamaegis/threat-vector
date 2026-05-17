@@ -13,7 +13,10 @@ load_dotenv(Path(__file__).parent / ".env", override=True)
 
 from agent import run_threat_agent
 from live_call_simulator import stream_live_call, get_demo_transcript
+
 from cross_school_detector import get_district_threat_summary
+from counselor_notes import log_counselor_note, check_escalation_pattern
+from notify import send_sms_alert
 
 app = FastAPI(title="Threat Vector", version="1.0.0")
 
@@ -25,12 +28,12 @@ app.add_middleware(
 )
 
 
-def _extract_call_fields(body: dict) -> tuple[str, str, str, str]:
+def _extract_call_fields(body: dict) -> tuple[str, str, str, str, int]:
     """
     Normalize payload from AgentPhone webhook events.
 
     AgentPhone event format:
-      { "event": "agent.call_ended", "call": { "id", "transcript", "status" } }
+      { "event": "agent.call_ended", "call": { "id", "transcript", "duration", "status" } }
     Also handles flat format and direct test POSTs.
     """
     event_type = body.get("event") or body.get("type") or ""
@@ -59,9 +62,28 @@ def _extract_call_fields(body: dict) -> tuple[str, str, str, str]:
         or body.get("recordingUrl")
         or ""
     )
+    # call_duration_seconds — AgentPhone sends as duration, duration_seconds, or durationSeconds
+    raw_dur = (
+        call.get("duration_seconds")
+        or call.get("duration")
+        or call.get("durationSeconds")
+        or call.get("call_duration")
+        or body.get("duration_seconds")
+        or body.get("duration")
+        or body.get("call_duration_seconds")
+        or 0
+    )
+    try:
+        call_duration = int(float(str(raw_dur)))
+    except (ValueError, TypeError):
+        call_duration = 0
+    # If AgentPhone doesn't send duration, estimate from transcript word count (~2 words/sec)
+    if call_duration == 0 and transcript.strip():
+        call_duration = max(5, len(transcript.split()) // 2)
+
     # Treat event type as the status signal
     status = event_type or call.get("status") or body.get("status") or ""
-    return str(call_id), str(transcript), str(status).lower(), str(recording_url)
+    return str(call_id), str(transcript), str(status).lower(), str(recording_url), call_duration
 
 
 CALL_ENDED_EVENTS = {
@@ -77,12 +99,17 @@ CALL_ENDED_EVENTS = {
 @app.post("/webhook/call")
 async def handle_call(request: Request):
     body = await request.json()
-    call_id, transcript, status, recording_url = _extract_call_fields(body)
+    call_id, transcript, status, recording_url, call_duration = _extract_call_fields(body)
 
-    print(f"[webhook] event={status!r} call_id={call_id!r} transcript_len={len(transcript)}")
+    print(f"[webhook] event={status!r} call_id={call_id!r} duration={call_duration}s transcript_len={len(transcript)}")
 
     if status in CALL_ENDED_EVENTS and transcript.strip():
-        asyncio.create_task(run_threat_agent(call_id, transcript, recording_url or None))
+        # Stream transcript to live_calls table FIRST so the dashboard shows the overlay immediately
+        school_guess = next(
+            (w for w in transcript.split() if len(w) > 4 and w[0].isupper()), "Unknown School"
+        )
+        asyncio.create_task(stream_live_call(call_id, transcript, school_guess, delay_ms=80))
+        asyncio.create_task(run_threat_agent(call_id, transcript, recording_url or None, call_duration))
         return JSONResponse({"status": "processing", "call_id": call_id})
 
     return JSONResponse({
@@ -103,12 +130,13 @@ async def handle_agentphone(request: Request):
 @app.post("/webhook/test")
 async def handle_test(request: Request):
     body = await request.json()
-    call_id   = body.get("call_id", "manual-test")
-    transcript = body.get("transcript", "")
+    call_id       = body.get("call_id", "manual-test")
+    transcript    = body.get("transcript", "")
     recording_url = body.get("recording_url")
+    call_duration = int(body.get("call_duration_seconds", max(5, len(transcript.split()) // 2)))
     if not transcript.strip():
         return JSONResponse({"error": "transcript required"}, status_code=400)
-    asyncio.create_task(run_threat_agent(call_id, transcript, recording_url))
+    asyncio.create_task(run_threat_agent(call_id, transcript, recording_url, call_duration))
     return JSONResponse({"status": "processing", "call_id": call_id})
 
 
@@ -122,6 +150,69 @@ async def demo_live_call(request: Request):
     delay_ms = body.get("delay_ms", 150)
     asyncio.create_task(stream_live_call(call_id, transcript, school, delay_ms))
     return JSONResponse({"status": "streaming", "call_id": call_id})
+
+
+@app.post("/api/counselor/note")
+async def counselor_note(request: Request):
+    body = await request.json()
+    school_name      = body.get("school_name", "")
+    student_id_hash  = body.get("student_id_hash", "")
+    note_text        = body.get("note_text", "")
+    severity         = body.get("severity", "medium")
+    staff_id         = body.get("staff_id", "")
+
+    if not school_name or not student_id_hash or not note_text:
+        return JSONResponse({"error": "school_name, student_id_hash, and note_text are required"}, status_code=400)
+
+    log_counselor_note(school_name, student_id_hash, note_text, severity, staff_id)
+    escalation = check_escalation_pattern(school_name, student_id_hash)
+
+    if escalation.get("escalate"):
+        call_id = f"counselor-{student_id_hash[:8]}"
+        classification = {
+            "threat_level": 4,
+            "school_name": school_name,
+            "summary": escalation["reason"],
+            "recommended_action": "escalate",
+            "threat_type": "counselor_escalation",
+        }
+        try:
+            send_sms_alert(
+                {
+                    **classification,
+                    "summary": f"COUNSELOR ESCALATION: {escalation['reason']}",
+                },
+                call_id,
+            )
+        except Exception as e:
+            print(f"[counselor] WARNING: SMS escalation failed: {e}")
+
+    return JSONResponse({
+        "status": "logged",
+        "escalate": escalation.get("escalate", False),
+        "tip_count": escalation.get("tip_count", 0),
+        "note_count": escalation.get("note_count", 0),
+        "reason": escalation.get("reason", ""),
+    })
+
+
+@app.post("/api/tip/submit")
+async def submit_tip(request: Request):
+    body = await request.json()
+    transcript   = body.get("transcript", "")
+    school_name  = body.get("school_name", "")
+    category     = body.get("category", "other")
+    tip_source   = body.get("tip_source", "web_form")
+
+    if not transcript.strip():
+        return JSONResponse({"error": "transcript is required"}, status_code=400)
+
+    import uuid
+    call_id = f"{tip_source}-{uuid.uuid4().hex[:12]}"
+    call_duration_seconds = max(5, len(transcript.split()) // 2)
+
+    asyncio.create_task(run_threat_agent(call_id, transcript, None, call_duration_seconds))
+    return JSONResponse({"status": "received", "call_id": call_id})
 
 
 @app.get("/api/cross-school-alerts")

@@ -21,7 +21,7 @@ from datetime import datetime
 async def _run_sync_with_timeout(func, timeout: int, *args, **kwargs):
     return await asyncio.wait_for(asyncio.to_thread(func, *args, **kwargs), timeout=timeout)
 
-async def run_threat_agent(call_id: str, transcript: str, recording_url: str | None = None):
+async def run_threat_agent(call_id: str, transcript: str, recording_url: str | None = None, call_duration_seconds: int = 0):
     print(f"[{call_id}] Starting threat agent pipeline...")
     pipeline_errors: list[str] = []
 
@@ -216,9 +216,25 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
             print(f"[{call_id}] WARNING: Sponge OSINT payment failed: {e}")
 
     # ── Supabase: log to Threat Vector dashboard ──────────────────────────────
+    # Ensure call_duration_seconds is always set (used by dashboard to distinguish real calls)
+    if call_duration_seconds == 0 and transcript.strip():
+        call_duration_seconds = max(5, len(transcript.split()) // 2)
+    classification["call_duration_seconds"] = call_duration_seconds
+
     print(f"[{call_id}] Supabase: logging to dashboard...")
     tip_id = log_tip_to_aegis(classification, transcript, call_id, osint_summary)
     print(f"[{call_id}] Supabase: tip ID {tip_id}")
+
+    # ── Attendance anomaly detection ──────────────────────────────────────────
+    try:
+        from attendance_anomaly import check_attendance_anomaly
+        anomaly = check_attendance_anomaly(school, call_id)
+        if anomaly.get("anomaly"):
+            print(f"[{call_id}] ATTENDANCE ANOMALY: {anomaly['message']}")
+            classification["attendance_anomaly"] = anomaly["message"]
+    except Exception as e:
+        pipeline_errors.append("attendance_anomaly")
+        print(f"[{call_id}] WARNING: Attendance anomaly check failed: {e}")
 
     # ── Cross-school pattern detection ────────────────────────────────────────
     print(f"[{call_id}] Cross-school: checking for coordinated threat patterns...")
