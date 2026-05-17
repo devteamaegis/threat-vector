@@ -165,10 +165,14 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
         f"-> final={final_level} ({'CONSENSUS' if three_model_consensus else 'DIVERGENT'})"
     )
 
-    # ── Supermemory: prior tips context ───────────────────────────────────────
-    print(f"[{call_id}] Supermemory: checking prior tips...")
+    # ── Supermemory: multi-dimensional prior tips context ─────────────────────
+    print(f"[{call_id}] Supermemory: checking prior tips (school + type + behavioral)...")
     try:
-        prior_tips = await _run_sync_with_timeout(search_prior_tips, 5, school)
+        prior_tips = await _run_sync_with_timeout(
+            search_prior_tips, 8, school,
+            classification.get("threat_type", ""),
+            classification.get("key_facts") or [],
+        )
     except Exception as e:
         pipeline_errors.append("supermemory_search")
         print(f"[{call_id}] WARNING: Supermemory search failed: {e}")
@@ -286,7 +290,7 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
             "transcript": transcript,
         }
         subject, body = generate_email_brief(tip_data)
-        send_email_brief(subject, body, call_id)
+        send_email_brief(subject, body, call_id, classification=classification)
         disburse_agent_payment("agentmail-brief", 1, call_id, {"school": school})
     except Exception as e:
         pipeline_errors.append("email_brief")

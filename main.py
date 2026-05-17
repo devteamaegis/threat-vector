@@ -131,6 +131,15 @@ async def cross_school_alerts():
     return JSONResponse(summary)
 
 
+@app.get("/api/sponge/wallet")
+async def sponge_wallet():
+    """Return Sponge wallet balance and recent agent payment transactions."""
+    from sponge_payments import get_wallet_balance, get_recent_transactions
+    balance = get_wallet_balance()
+    transactions = get_recent_transactions()
+    return JSONResponse({"balance": balance, "transactions": transactions})
+
+
 @app.get("/health")
 async def health():
     """Show which integrations are configured."""

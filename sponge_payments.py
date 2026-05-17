@@ -60,3 +60,29 @@ def get_wallet_balance(call_id: str = "system") -> float | None:
         return r.json().get("balance_cents", 0) / 100 if r.ok else None
     except Exception:
         return None
+
+
+def get_recent_transactions(limit: int = 10) -> list:
+    """Fetch recent agent payment transactions for the dashboard ticker."""
+    key = os.getenv("SPONGE_API_KEY")
+    wallet_id = os.getenv("SPONGE_WALLET_ID")
+    if not key or key == "FILL_IN" or not wallet_id or wallet_id == "FILL_IN":
+        # Return demo transactions for display when wallet not configured
+        return [
+            {"service": "browser-use-osint", "amount": 0.02, "label": "OSINT Search", "icon": "🔍"},
+            {"service": "twilio-sms", "amount": 0.01, "label": "SMS Alert", "icon": "📱"},
+            {"service": "agentmail-brief", "amount": 0.01, "label": "Email Brief", "icon": "✉️"},
+            {"service": "gemini-verify", "amount": 0.03, "label": "Gemini Verify", "icon": "✦"},
+            {"service": "supermemory-store", "amount": 0.005, "label": "Memory Store", "icon": "🧬"},
+        ]
+    try:
+        r = requests.get(
+            f"{SPONGE_BASE}/wallets/{wallet_id}/transactions?limit={limit}",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=5,
+        )
+        if r.ok:
+            return r.json().get("transactions", [])
+    except Exception:
+        pass
+    return []
