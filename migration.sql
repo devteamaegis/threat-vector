@@ -1,0 +1,27 @@
+-- Run this in the Supabase SQL Editor:
+-- https://supabase.com/dashboard/project/tnyjqpxrxiihuafqaluh/sql/new
+
+ALTER TABLE tips
+  ADD COLUMN IF NOT EXISTS caller_emotion text,
+  ADD COLUMN IF NOT EXISTS caller_tone text,
+  ADD COLUMN IF NOT EXISTS escalation_risk text,
+  ADD COLUMN IF NOT EXISTS credibility_signals jsonb,
+  ADD COLUMN IF NOT EXISTS key_facts jsonb,
+  ADD COLUMN IF NOT EXISTS timeline text,
+  ADD COLUMN IF NOT EXISTS location_detail text,
+  ADD COLUMN IF NOT EXISTS subject_description text,
+  ADD COLUMN IF NOT EXISTS call_duration_seconds integer,
+  ADD COLUMN IF NOT EXISTS caller_language text,
+  ADD COLUMN IF NOT EXISTS multilingual_call boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS gemini_level integer,
+  ADD COLUMN IF NOT EXISTS gemini_reasoning text,
+  ADD COLUMN IF NOT EXISTS consensus boolean,
+  ADD COLUMN IF NOT EXISTS three_model_consensus boolean,
+  ADD COLUMN IF NOT EXISTS bayes_probability_pct numeric,
+  ADD COLUMN IF NOT EXISTS bayes_ci_low_pct numeric,
+  ADD COLUMN IF NOT EXISTS bayes_ci_high_pct numeric,
+  ADD COLUMN IF NOT EXISTS bayes_top_drivers jsonb,
+  ADD COLUMN IF NOT EXISTS bayes_features_hit jsonb,
+  ADD COLUMN IF NOT EXISTS s3_archive_uri text,
+  ADD COLUMN IF NOT EXISTS deepgram_confidence numeric,
+  ADD COLUMN IF NOT EXISTS deepgram_language text;

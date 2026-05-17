@@ -11,6 +11,7 @@ from gemini_verify import gemini_verify
 from gemini_live import live_multilingual_analysis
 from aws_archive import archive_transcript
 from deepgram_transcribe import transcribe_audio_url
+from bayesian_scorer import monte_carlo_score, probability_to_level
 from datetime import datetime
 
 async def run_threat_agent(call_id: str, transcript: str, recording_url: str | None = None):
@@ -57,6 +58,23 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
     school = classification.get("school_name", "Unknown School")
     print(f"[{call_id}] Claude: level {claude_level}/5, school: {school}")
 
+    # ── Bayesian + Monte Carlo scoring ───────────────────────────────────────
+    # Independent mathematical model — verbal context clues drive probability.
+    # Runs 1,000 Monte Carlo simulations to output probability + CI.
+    print(f"[{call_id}] Bayesian/MC: scoring verbal context clues...")
+    bayes = monte_carlo_score(working_transcript, n_simulations=1000)
+    bayes_level = probability_to_level(bayes["mean_probability"])
+    classification["bayes_probability_pct"] = bayes["mean_probability_pct"]
+    classification["bayes_ci_low_pct"]      = bayes["ci_low_pct"]
+    classification["bayes_ci_high_pct"]     = bayes["ci_high_pct"]
+    classification["bayes_top_drivers"]     = bayes["top_drivers"]
+    classification["bayes_features_hit"]    = bayes["features_hit"]
+    print(
+        f"[{call_id}] Bayesian: {bayes['mean_probability_pct']}% "
+        f"[{bayes['ci_low_pct']}–{bayes['ci_high_pct']}% CI] "
+        f"level {bayes_level}/5 | drivers: {[d['keyword'] for d in bayes['top_drivers']]}"
+    )
+
     # ── Google DeepMind: Gemini second-opinion verification ───────────────────
     print(f"[{call_id}] Gemini: independent threat verification...")
     gemini_result = gemini_verify(working_transcript, claude_level, call_id)
@@ -70,8 +88,16 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
     if deepgram_result:
         classification["deepgram_confidence"] = deepgram_result.get("confidence")
         classification["deepgram_language"] = deepgram_result.get("language")
-    # Use consensus level as the final threat level
-    final_level = gemini_result.get("consensus_level", claude_level)
+    # 3-model consensus: Claude + Gemini + Bayesian → take the maximum
+    # If all three agree within 1 level, we have high confidence.
+    gemini_l = gemini_result.get("gemini_level") or claude_level
+    three_model_consensus = abs(claude_level - gemini_l) <= 1 and abs(claude_level - bayes_level) <= 1
+    final_level = max(claude_level, gemini_l, bayes_level)
+    classification["three_model_consensus"] = three_model_consensus
+    print(
+        f"[{call_id}] 3-model: Claude={claude_level} Gemini={gemini_l} Bayes={bayes_level} "
+        f"→ final={final_level} ({'CONSENSUS' if three_model_consensus else 'DIVERGENT'})"
+    )
     classification["threat_level"] = final_level
 
     # ── Supermemory: prior tips context ───────────────────────────────────────
