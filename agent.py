@@ -12,6 +12,9 @@ from gemini_live import live_multilingual_analysis
 from aws_archive import archive_transcript
 from deepgram_transcribe import transcribe_audio_url
 from bayesian_scorer import monte_carlo_score, probability_to_level
+from cross_school_detector import detect_cross_school_pattern
+from predict_window import predict_threat_window
+from dispatch_brief import format_dispatch_brief
 from datetime import datetime
 
 async def run_threat_agent(call_id: str, transcript: str, recording_url: str | None = None):
@@ -122,6 +125,25 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
     print(f"[{call_id}] Supabase: logging to dashboard...")
     tip_id = log_tip_to_aegis(classification, transcript, call_id, osint_summary)
     print(f"[{call_id}] Supabase: tip ID {tip_id}")
+
+    # ── Cross-school pattern detection ───────────────────────────────────────────
+    print(f"[{call_id}] Cross-school: checking for coordinated threat patterns...")
+    cross_school_alert = detect_cross_school_pattern(school, classification.get("threat_type", ""), call_id)
+    if cross_school_alert:
+        classification["cross_school_alert"] = cross_school_alert["message"]
+        print(f"[{call_id}] CROSS-SCHOOL ALERT: {cross_school_alert['message'][:80]}")
+
+    # ── Predictive threat window ──────────────────────────────────────────────────
+    threat_window = predict_threat_window(working_transcript, classification)
+    classification["threat_window"] = threat_window.get("window")
+    classification["threat_window_confidence"] = threat_window.get("confidence")
+    print(f"[{call_id}] Threat window: {threat_window.get('window')} ({threat_window.get('confidence')} confidence)")
+
+    # ── Dispatch brief (level 4+) ─────────────────────────────────────────────────
+    if final_level >= 4:
+        brief = format_dispatch_brief(classification, call_id)
+        classification["dispatch_brief"] = brief
+        print(f"[{call_id}] Dispatch brief generated ({len(brief)} chars)")
 
     # ── AWS S3: archive transcript + report ───────────────────────────────────
     print(f"[{call_id}] AWS S3: archiving transcript...")

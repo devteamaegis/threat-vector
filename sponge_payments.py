@@ -6,7 +6,7 @@ Used here to: (1) pay the OSINT agent for each search, (2) track spend per distr
 import os
 import requests
 
-SPONGE_BASE = "https://api.sponge.finance/v1"  # Update with actual Sponge endpoint
+SPONGE_BASE = os.getenv("SPONGE_BASE", "https://api.wallet.paysponge.com/mcp")
 
 def disburse_agent_payment(service: str, amount_cents: int, call_id: str, metadata: dict = {}) -> dict | None:
     """

@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import asyncio
 import os
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -11,6 +12,8 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env", override=True)
 
 from agent import run_threat_agent
+from live_call_simulator import stream_live_call, get_demo_transcript
+from cross_school_detector import get_district_threat_summary
 
 app = FastAPI(title="Threat Vector", version="1.0.0")
 
@@ -107,6 +110,25 @@ async def handle_test(request: Request):
         return JSONResponse({"error": "transcript required"}, status_code=400)
     asyncio.create_task(run_threat_agent(call_id, transcript, recording_url))
     return JSONResponse({"status": "processing", "call_id": call_id})
+
+
+@app.post("/api/demo-live-call")
+async def demo_live_call(request: Request):
+    """Start a live call simulation for demo purposes."""
+    body = await request.json()
+    transcript = body.get("transcript") or get_demo_transcript()
+    call_id = body.get("call_id", f"demo-{int(time.time())}")
+    school = body.get("school", "Westview High School")
+    delay_ms = body.get("delay_ms", 150)
+    asyncio.create_task(stream_live_call(call_id, transcript, school, delay_ms))
+    return JSONResponse({"status": "streaming", "call_id": call_id})
+
+
+@app.get("/api/cross-school-alerts")
+async def cross_school_alerts():
+    """Return district-wide threat pattern summary."""
+    summary = get_district_threat_summary(days=7)
+    return JSONResponse(summary)
 
 
 @app.get("/health")

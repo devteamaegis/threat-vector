@@ -66,6 +66,12 @@ FEATURE_TABLE: list[tuple[str, list[str], float, float]] = [
     ("caller_laughs",     ["haha", "lol", "just kidding", "just joking", "not serious"],                                    0.10, 0.05),
     ("caller_vague",      ["just thought", "maybe nothing", "probably fine", "i don't know"],                               0.55, 0.2),
     ("anonymous_hedge",   ["don't want to get anyone in trouble", "maybe i'm wrong"],                                       0.7,  0.2),
+
+    # Category: Voice emotion markers (injected by Deepgram sentiment analysis)
+    ("deepgram_fear",       ["[emotion:fear]", "[sentiment:fear]", "[tone:distressed]"],           6.0, 1.5),
+    ("deepgram_panic",      ["[emotion:panic]", "[tone:panicked]", "[urgency:high]"],               8.0, 2.0),
+    ("deepgram_laughing",   ["[emotion:joy]", "[tone:laughing]", "[sentiment:amused]"],             0.06, 0.03),
+    ("deepgram_uncertain",  ["[emotion:uncertain]", "[tone:hesitant]", "[sentiment:neutral]"],      0.7, 0.2),
 ]
 
 # Compile patterns for fast matching

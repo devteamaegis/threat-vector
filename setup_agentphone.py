@@ -23,20 +23,41 @@ load_dotenv(Path(__file__).parent / ".env", override=True)
 
 API_BASE = "https://api.agentphone.ai"
 
-SYSTEM_PROMPT = """You are Claudia, an anonymous school safety tip intake agent for the Threat Vector system.
+SYSTEM_PROMPT = """You are Claudia, the AI school secretary for the Threat Vector system. You handle three types of calls — and you sound like a warm, competent human secretary, not a robot.
 
-Your job is to calmly and professionally gather threat reports from callers. You will:
-1. Greet the caller and reassure them this line is completely anonymous
-2. Ask what school the concern is about
-3. Ask them to describe the threat or concern in detail
-4. Ask if there is a specific location within the school
-5. Ask about the timeline — is this happening right now, today, or in the coming days?
-6. Ask for a description of any person involved, if applicable
-7. Thank them and let them know their report will be reviewed by trained safety staff immediately
+## How you speak
+Short sentences. Natural pauses. Never sound like you're reading a script. Say "got it" and "okay" and "let me make sure I have that right." If someone is upset, slow down and make them feel heard first.
 
-Keep your tone calm, professional, and non-judgmental. Never ask for the caller's name or any identifying information. If the caller seems panicked, slow down and reassure them. Keep each question brief. End the call gracefully once you have the key details."""
+Never use filler phrases like "Certainly!" or "Of course!" or "Absolutely!" — just speak like a person.
 
-BEGIN_MESSAGE = "Thank you for calling the anonymous school safety tip line. This call is completely confidential. I'm here to help. Please tell me — what school is your concern about, and what did you witness or hear?"
+---
+
+## Call type 1: SAFETY TIPS (anonymous threats, safety concerns)
+When someone starts describing a threat, danger, or something that scared them:
+- Reassure them: "This line is completely anonymous. No one will know you called."
+- Gather: which school, what they saw or heard, where on campus, when, any description of the person involved
+- End warmly: "Thank you for calling. This gets reviewed by safety staff right away. You did the right thing."
+- Never ask for their name.
+
+## Call type 2: ATTENDANCE (parent calling to report absence or tardy)
+When a parent says their child is absent, late, or leaving early:
+- Confirm: student's full name, grade or homeroom teacher, date, reason (illness, appointment, family matter — no medical details needed)
+- Say back what you captured to confirm accuracy
+- End: "Got it, I've logged that. [Student name]'s teacher will be notified. Have a good day."
+
+## Call type 3: GENERAL SCHOOL INQUIRIES
+When someone has a general question about the school:
+- Hours, events, contact info, enrollment questions
+- Answer briefly if you know it, or say: "Let me connect you with the main office for that — they'll have the most current information."
+
+---
+
+## How to figure out which call type it is
+Listen to the first 10 seconds. If they sound scared or worried — it's a safety tip. If they start with "my son" or "my daughter" — it's probably attendance. If they ask a question — it's a general inquiry. When in doubt, just ask: "Are you reporting a safety concern, or is this about attendance?"
+
+Stay warm and human throughout. Every call matters."""
+
+BEGIN_MESSAGE = "Hi, thanks for calling. This is Claudia — I can help with safety tips, attendance, or general school questions. What can I do for you?"
 
 
 def get_headers(api_key: str) -> dict:
@@ -44,6 +65,59 @@ def get_headers(api_key: str) -> dict:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+
+
+def list_voices(api_key: str) -> list:
+    """Fetch available TTS voices from AgentPhone."""
+    try:
+        r = httpx.get(f"{API_BASE}/v1/voices", headers=get_headers(api_key))
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        # Some endpoints use /v1/agents/voices
+        try:
+            r = httpx.get(f"{API_BASE}/v1/agents/voices", headers=get_headers(api_key))
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return []
+
+
+def pick_best_voice(voices: list) -> str | None:
+    """Pick the warmest-sounding female voice. Returns voice ID or None."""
+    if not voices:
+        return None
+    # Prefer: female, warm/natural/conversational descriptors, not "professional" or "corporate"
+    priority_keywords = ["warm", "natural", "conversational", "friendly", "soft", "calm"]
+    female_keywords = ["female", "woman", "girl", "feminine", "she"]
+    avoid_keywords = ["robotic", "corporate", "formal", "british"]
+
+    scored = []
+    for v in voices:
+        name = (v.get("name") or v.get("voiceName") or "").lower()
+        desc = (v.get("description") or v.get("style") or "").lower()
+        combined = f"{name} {desc}"
+
+        if any(k in combined for k in avoid_keywords):
+            continue
+
+        score = 0
+        if any(k in combined for k in female_keywords):
+            score += 3
+        for kw in priority_keywords:
+            if kw in combined:
+                score += 2
+
+        voice_id = v.get("id") or v.get("voiceId") or v.get("voice_id")
+        if voice_id:
+            scored.append((score, voice_id, name))
+
+    if scored:
+        scored.sort(reverse=True)
+        return scored[0][1]
+    # Fall back to first voice
+    first = voices[0]
+    return first.get("id") or first.get("voiceId") or first.get("voice_id")
 
 
 def list_agents(api_key: str) -> list:
@@ -140,14 +214,35 @@ def main():
     except Exception as e:
         print(f"  Could not list numbers: {e}")
 
+    # Fetch and select voice
+    print("\nFetching available voices...")
+    voices = list_voices(api_key)
+    if voices:
+        print(f"  Found {len(voices)} voices:")
+        for v in voices[:8]:
+            vid = v.get("id") or v.get("voiceId") or v.get("voice_id", "")
+            vname = v.get("name") or v.get("voiceName", "")
+            vdesc = v.get("description") or v.get("style", "")
+            print(f"    {vid}: {vname} — {vdesc}")
+        best_voice = pick_best_voice(voices)
+        if best_voice:
+            print(f"  → Auto-selected voice: {best_voice}")
+    else:
+        best_voice = None
+        print("  Could not fetch voices (will use account default)")
+
     # Configure agent
-    print(f"\nConfiguring agent {agent_id}...")
-    updated = update_agent(api_key, agent_id, {
+    agent_payload = {
         "voiceMode": "hosted",
         "systemPrompt": SYSTEM_PROMPT,
         "beginMessage": BEGIN_MESSAGE,
-        "modelTier": "balanced",
-    })
+        "modelTier": "max",
+    }
+    if best_voice:
+        agent_payload["voiceId"] = best_voice
+
+    print(f"\nConfiguring agent {agent_id}...")
+    updated = update_agent(api_key, agent_id, agent_payload)
     print(f"  Agent updated: {updated.get('name') or updated.get('id')}")
 
     # Set agent-level webhook
