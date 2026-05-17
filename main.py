@@ -74,44 +74,67 @@ def _extract_call_fields(body: dict) -> tuple[str, str, str, str, int]:
     """
     Normalize payload from AgentPhone webhook events.
 
-    AgentPhone event format:
-      { "event": "agent.call_ended", "call": { "id", "transcript", "duration", "status" } }
+    Confirmed AgentPhone format (from live webhook logs):
+      {
+        "event": "agent.call_ended",
+        "channel": "voice",
+        "data": {
+          "callId": "cmpacgtfi...",
+          "durationSeconds": 8.86,
+          "transcript": [{"role": "user", "content": "I want to harm you. "}],
+          "status": "completed",
+          "recording_url": null
+        }
+      }
     Also handles flat format and direct test POSTs.
     """
     event_type = body.get("event") or body.get("type") or ""
 
-    # Prefer nested call object; fall back to top-level body
-    call = body.get("call", body)
+    # AgentPhone nests everything under "data"; fall back to "call" or top-level body
+    data = body.get("data") or body.get("call") or body
 
+    # ── call_id ────────────────────────────────────────────────────────────────
     call_id = (
-        body.get("callId")          # AgentPhone camelCase top-level
-        or call.get("id")
-        or call.get("callId")
-        or call.get("call_id")
+        data.get("callId")
+        or data.get("id")
+        or data.get("call_id")
+        or body.get("callId")
         or body.get("id")
         or body.get("call_id")
         or "unknown"
     )
-    transcript = (
-        call.get("transcript")
-        or call.get("transcription")
-        or body.get("transcript")
-        or ""
-    )
+
+    # ── transcript ─────────────────────────────────────────────────────────────
+    # For agent.call_ended: transcript is a list of {role, content} dicts.
+    # For agent.message: transcript is a plain string.
+    raw_transcript = data.get("transcript") or body.get("transcript") or data.get("transcription") or ""
+    if isinstance(raw_transcript, list):
+        # Join only user-role utterances (filter out AI responses)
+        user_parts = [
+            t.get("content", "").strip()
+            for t in raw_transcript
+            if isinstance(t, dict) and t.get("role") == "user" and t.get("content", "").strip()
+        ]
+        transcript = " ".join(user_parts)
+    else:
+        transcript = str(raw_transcript).strip()
+
+    # ── recording_url ──────────────────────────────────────────────────────────
     recording_url = (
-        call.get("recording_url")
-        or call.get("recordingUrl")
-        or call.get("recording")
+        data.get("recording_url")
+        or data.get("recordingUrl")
+        or data.get("recording")
         or body.get("recording_url")
         or body.get("recordingUrl")
         or ""
     )
-    # call_duration_seconds — AgentPhone sends as duration, duration_seconds, or durationSeconds
+
+    # ── duration ───────────────────────────────────────────────────────────────
+    # AgentPhone uses "durationSeconds" (float) inside the data object
     raw_dur = (
-        call.get("duration_seconds")
-        or call.get("duration")
-        or call.get("durationSeconds")
-        or call.get("call_duration")
+        data.get("durationSeconds")
+        or data.get("duration_seconds")
+        or data.get("duration")
         or body.get("duration_seconds")
         or body.get("duration")
         or body.get("call_duration_seconds")
@@ -121,12 +144,12 @@ def _extract_call_fields(body: dict) -> tuple[str, str, str, str, int]:
         call_duration = int(float(str(raw_dur)))
     except (ValueError, TypeError):
         call_duration = 0
-    # If AgentPhone doesn't send duration, estimate from transcript word count (~2 words/sec)
+    # Estimate from word count if still zero and we have a transcript
     if call_duration == 0 and transcript.strip():
         call_duration = max(5, len(transcript.split()) // 2)
 
-    # Treat event type as the status signal
-    status = event_type or call.get("status") or body.get("status") or ""
+    # ── status / event ─────────────────────────────────────────────────────────
+    status = event_type or data.get("status") or body.get("status") or ""
     return str(call_id), str(transcript), str(status).lower(), str(recording_url), call_duration
 
 
