@@ -156,7 +156,35 @@ def score_transcript(transcript: str, prior: float = BASE_RATE) -> dict:
 
 # ── Monte Carlo layer ─────────────────────────────────────────────────────────
 
-def monte_carlo_score(transcript: str, n_simulations: int = 1000, prior: float = BASE_RATE) -> dict:
+def _composite_features(base_features: list[FeatureHit]) -> list[FeatureHit]:
+    """Boost score when multiple high-credibility signals co-occur (FBI principle: specificity + corroboration)."""
+    names = {f["name"] for f in base_features}
+    out: list[FeatureHit] = []
+    if "specific_location" in names and "specific_person" in names:
+        out.append(FeatureHit(name="composite_location_person", keyword="[location+subject]", mean_ratio=3.5, std_ratio=1.0))
+    if "direct_witness" in names and "caller_precise" in names:
+        out.append(FeatureHit(name="composite_witness_precise", keyword="[firsthand+evidence]", mean_ratio=4.5, std_ratio=1.2))
+    if "weapon_photo" in names and ("timeline_immediate" in names or "timeline_near" in names):
+        out.append(FeatureHit(name="composite_weapon_timeline", keyword="[weapon+timeline]", mean_ratio=8.0, std_ratio=2.0))
+    if "escalation_pattern" in names and "multiple_witnesses" in names:
+        out.append(FeatureHit(name="composite_escalation_corroborated", keyword="[escalation+corroboration]", mean_ratio=5.0, std_ratio=1.5))
+    specificity_count = len(names & {"specific_person", "specific_location", "specific_method", "weapon_photo"})
+    if specificity_count >= 3:
+        out.append(FeatureHit(name="high_specificity_cluster", keyword="[3+ specific details]", mean_ratio=6.0, std_ratio=2.0))
+    elif specificity_count == 2:
+        out.append(FeatureHit(name="medium_specificity_cluster", keyword="[2 specific details]", mean_ratio=2.5, std_ratio=0.8))
+    return out
+
+
+def cross_tip_feature(prior_tip_count: int) -> FeatureHit | None:
+    """Boost probability when prior tips about the same school exist this week (cross-reference signal)."""
+    if prior_tip_count <= 0:   return None
+    if prior_tip_count == 1:   return FeatureHit(name="cross_tip_single",   keyword=f"[1 prior tip this week]",                   mean_ratio=2.0, std_ratio=0.6)
+    if prior_tip_count == 2:   return FeatureHit(name="cross_tip_multiple", keyword=f"[2 prior tips — pattern forming]",           mean_ratio=3.5, std_ratio=1.0)
+    return                             FeatureHit(name="cross_tip_pattern",  keyword=f"[{prior_tip_count} tips — confirmed pattern]", mean_ratio=5.0, std_ratio=1.5)
+
+
+def monte_carlo_score(transcript: str, n_simulations: int = 1000, prior: float = BASE_RATE, prior_tip_count: int = 0) -> dict:
     """
     Run N simulations with sampled feature weights to produce a distribution.
     Each simulation samples likelihood ratios from N(mean, std) distributions.
@@ -167,7 +195,9 @@ def monte_carlo_score(transcript: str, n_simulations: int = 1000, prior: float =
       std                 — spread of distribution
       feature_trace       — what's driving the score
     """
-    features = extract_features(transcript)
+    base_features = extract_features(transcript)
+    cross = cross_tip_feature(prior_tip_count)
+    features = base_features + _composite_features(base_features) + ([cross] if cross else [])
     if not features:
         return {
             "mean_probability": prior,
