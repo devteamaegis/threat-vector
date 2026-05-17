@@ -122,6 +122,10 @@ async def stream_live_call(
     final_level = probability_to_level(final_bayes["mean_probability"])
     final_features = [d["keyword"] for d in final_bayes.get("top_drivers", [])][:3]
 
+    # Hold on 'active' for 5s so the dashboard overlay stays visible long enough
+    # to read — especially important for short single-sentence real calls.
+    await asyncio.sleep(5)
+
     _upsert_live_call({
         "call_id": call_id,
         "words_so_far": transcript,
