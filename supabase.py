@@ -66,16 +66,42 @@ def log_tip_to_aegis(classification: dict, transcript: str, call_id: str, osint_
     if district_id:
         payload["district_id"] = district_id
 
-    try:
-        response = requests.post(
+    # Base columns guaranteed to exist in schema
+    BASE_COLUMNS = {
+        "description", "category", "urgency", "severity", "status",
+        "is_anonymous", "ai_summary", "ai_triage_score", "ai_recommended_action",
+        "school_name", "created_at", "submitted_at",
+    }
+
+    def _post(data):
+        return requests.post(
             f"{SUPABASE_URL}/rest/v1/tips",
             headers=_headers(),
-            json=payload,
-            timeout=10
+            json=data,
+            timeout=10,
         )
+
+    try:
+        response = _post(payload)
         if response.status_code in (200, 201):
             data = response.json()
-            return data[0].get("id") if data else None
+            tip_id = data[0].get("id") if data else None
+            print(f"[{call_id}] Supabase: tip logged with full schema (id: {tip_id})")
+            return tip_id
+
+        # Extended columns not migrated yet — retry with base columns only
+        if response.status_code == 400 and "column" in response.text.lower():
+            print(f"[{call_id}] Supabase: extended columns missing — retrying with base schema")
+            base_payload = {k: v for k, v in payload.items() if k in BASE_COLUMNS and v is not None}
+            response2 = _post(base_payload)
+            if response2.status_code in (200, 201):
+                data = response2.json()
+                tip_id = data[0].get("id") if data else None
+                print(f"[{call_id}] Supabase: tip logged with base schema (id: {tip_id})")
+                return tip_id
+            print(f"[{call_id}] WARNING: Supabase base retry failed {response2.status_code}: {response2.text[:200]}")
+            return None
+
         print(f"[{call_id}] WARNING: Supabase returned {response.status_code}: {response.text[:200]}")
     except Exception as e:
         print(f"[{call_id}] WARNING: Supabase log failed: {e}")

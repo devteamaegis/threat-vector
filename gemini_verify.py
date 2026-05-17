@@ -7,7 +7,7 @@ the threat is locked as CONFIRMED CRITICAL.
 import os
 import json
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash-preview-05-20"
 
 
 def gemini_verify(transcript: str, claude_level: int, call_id: str) -> dict:

@@ -26,7 +26,7 @@ import json
 
 
 LIVE_MODEL = "gemini-2.0-flash-live-001"
-LIVE_MODEL_FALLBACK = "gemini-2.0-flash"  # standard API fallback if Live isn't available
+LIVE_MODEL_FALLBACK = "gemini-2.5-flash-preview-05-20"  # standard API fallback if Live isn't available
 
 
 async def live_multilingual_analysis(transcript: str, call_id: str) -> dict:
