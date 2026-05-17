@@ -22,7 +22,7 @@ app.add_middleware(
 )
 
 
-def _extract_call_fields(body: dict) -> tuple[str, str, str]:
+def _extract_call_fields(body: dict) -> tuple[str, str, str, str]:
     """
     Normalize payload from AgentPhone webhook events.
 
@@ -48,9 +48,17 @@ def _extract_call_fields(body: dict) -> tuple[str, str, str]:
         or body.get("transcript")
         or ""
     )
+    recording_url = (
+        call.get("recording_url")
+        or call.get("recordingUrl")
+        or call.get("recording")
+        or body.get("recording_url")
+        or body.get("recordingUrl")
+        or ""
+    )
     # Treat event type as the status signal
     status = event_type or call.get("status") or body.get("status") or ""
-    return str(call_id), str(transcript), str(status).lower()
+    return str(call_id), str(transcript), str(status).lower(), str(recording_url)
 
 
 CALL_ENDED_EVENTS = {
@@ -66,12 +74,12 @@ CALL_ENDED_EVENTS = {
 @app.post("/webhook/call")
 async def handle_call(request: Request):
     body = await request.json()
-    call_id, transcript, status = _extract_call_fields(body)
+    call_id, transcript, status, recording_url = _extract_call_fields(body)
 
     print(f"[webhook] event={status!r} call_id={call_id!r} transcript_len={len(transcript)}")
 
     if status in CALL_ENDED_EVENTS and transcript.strip():
-        asyncio.create_task(run_threat_agent(call_id, transcript))
+        asyncio.create_task(run_threat_agent(call_id, transcript, recording_url or None))
         return JSONResponse({"status": "processing", "call_id": call_id})
 
     return JSONResponse({
@@ -94,9 +102,10 @@ async def handle_test(request: Request):
     body = await request.json()
     call_id   = body.get("call_id", "manual-test")
     transcript = body.get("transcript", "")
+    recording_url = body.get("recording_url")
     if not transcript.strip():
         return JSONResponse({"error": "transcript required"}, status_code=400)
-    asyncio.create_task(run_threat_agent(call_id, transcript))
+    asyncio.create_task(run_threat_agent(call_id, transcript, recording_url))
     return JSONResponse({"status": "processing", "call_id": call_id})
 
 
@@ -119,6 +128,9 @@ async def health():
             "moss":         cfg("MOSS_API_KEY"),
             "stripe":       cfg("STRIPE_SECRET_KEY"),
             "sponge":       cfg("SPONGE_API_KEY"),
+            "aws":          cfg("AWS_ACCESS_KEY_ID"),
+            "gemini":       cfg("GOOGLE_API_KEY"),
+            "deepgram":     cfg("DEEPGRAM_API_KEY"),
         }
     }
 

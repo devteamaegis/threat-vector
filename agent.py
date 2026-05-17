@@ -10,10 +10,19 @@ from sponge_payments import disburse_agent_payment
 from gemini_verify import gemini_verify
 from gemini_live import live_multilingual_analysis
 from aws_archive import archive_transcript
+from deepgram_transcribe import transcribe_audio_url
 from datetime import datetime
 
-async def run_threat_agent(call_id: str, transcript: str):
+async def run_threat_agent(call_id: str, transcript: str, recording_url: str | None = None):
     print(f"[{call_id}] Starting threat agent pipeline...")
+
+    deepgram_result = {}
+    if recording_url:
+        print(f"[{call_id}] Deepgram: re-transcribing call recording...")
+        deepgram_result = transcribe_audio_url(recording_url, call_id)
+        if deepgram_result.get("confidence", 0) > 0.85 and deepgram_result.get("transcript"):
+            transcript = deepgram_result["transcript"]
+            print(f"[{call_id}] Deepgram: using transcript with {deepgram_result['confidence']:.2f} confidence")
 
     # ── Gemini Live: multilingual detection + real-time translation ───────────
     # Runs FIRST — if non-English, Claude receives the English translation.
@@ -58,6 +67,9 @@ async def run_threat_agent(call_id: str, transcript: str):
     classification["caller_language"] = live_result.get("detected_language")
     classification["english_translation"] = live_result.get("english_translation")
     classification["multilingual_call"] = live_result.get("multilingual", False)
+    if deepgram_result:
+        classification["deepgram_confidence"] = deepgram_result.get("confidence")
+        classification["deepgram_language"] = deepgram_result.get("language")
     # Use consensus level as the final threat level
     final_level = gemini_result.get("consensus_level", claude_level)
     classification["threat_level"] = final_level

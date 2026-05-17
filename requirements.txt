@@ -1,8 +1,14 @@
 fastapi
 uvicorn[standard]
-anthropic>=0.40.0
+anthropic>=0.100.0
 twilio>=9.0.0
 requests>=2.31.0
 python-dotenv>=1.0.0
-browser-use
-httpx
+httpx>=0.27.0
+stripe>=9.0.0
+supermemory>=3.0.0
+google-genai>=1.0.0
+boto3>=1.34.0
+langchain-openai>=0.1.0
+browser-use>=0.12.0
+langfuse

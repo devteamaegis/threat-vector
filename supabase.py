@@ -38,6 +38,15 @@ def log_tip_to_aegis(classification: dict, transcript: str, call_id: str, osint_
         "ai_triage_score": level * 2,           # scale 1-5 → 2-10
         "ai_recommended_action": classification.get("recommended_action", "monitor"),
         "school_name": classification.get("school_name"),
+        "caller_language": classification.get("caller_language"),
+        "multilingual_call": classification.get("multilingual_call"),
+        "english_translation": classification.get("english_translation"),
+        "gemini_level": classification.get("gemini_level"),
+        "gemini_reasoning": classification.get("gemini_reasoning"),
+        "consensus": classification.get("consensus"),
+        "s3_archive_uri": classification.get("s3_archive_uri"),
+        "deepgram_confidence": classification.get("deepgram_confidence"),
+        "deepgram_language": classification.get("deepgram_language"),
     }
 
     district_id = os.getenv("NEXT_PUBLIC_DISTRICT_ID")
