@@ -37,32 +37,12 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
             pipeline_errors.append("deepgram")
             print(f"[{call_id}] WARNING: Deepgram failed: {e}")
 
-    # First classify the call type. Attendance calls end here after logging.
-    try:
-        classification = await _run_sync_with_timeout(classify_threat, 20, transcript)
-    except Exception as e:
-        pipeline_errors.append("claude_classification")
-        print(f"[{call_id}] WARNING: Claude classification failed: {e}")
-        classification = {
-            "call_type": "general",
-            "threat_level": 3,
-            "threat_type": "other",
-            "summary": transcript[:240],
-            "school_name": "Unknown School",
-            "recommended_action": "manual_review",
-        }
-
-    classification["pipeline_errors"] = pipeline_errors
-
-    if classification.get("call_type") == "attendance":
-        print(f"[{call_id}] Attendance call detected — skipping threat pipeline")
-        log_attendance(classification, call_id)
-        return classification
-
-    # ── Gemini Live: multilingual detection + real-time translation ───────────
+    # ── Gemini Live: multilingual detection FIRST so all downstream uses English ─
+    # Running this before classify_threat means Spanish/French/etc. calls get
+    # translated before Claude, Bayesian scorer, and OSINT ever see the text.
     print(f"[{call_id}] Gemini Live: multilingual real-time analysis...")
     try:
-        live_result = await asyncio.wait_for(live_multilingual_analysis(transcript, call_id), timeout=10)
+        live_result = await asyncio.wait_for(live_multilingual_analysis(transcript, call_id), timeout=12)
     except Exception as e:
         pipeline_errors.append("gemini_live")
         print(f"[{call_id}] WARNING: Gemini Live failed: {e}")
@@ -74,14 +54,37 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
 
     if live_result.get("multilingual") and live_result.get("english_translation"):
         lang = live_result["detected_language"]
-        print(f"[{call_id}] Non-English call detected: {lang} — using translation for Claude")
+        print(f"[{call_id}] Non-English call detected: {lang} — using translation for all downstream steps")
         working_transcript = live_result["english_translation"]
         classification_note = f"[Original language: {lang}. Auto-translated by Gemini Live.]"
     else:
         working_transcript = transcript
         classification_note = ""
 
-    # ── Moss: semantic context search before final threat classification ──────
+    # ── Attendance quick-check: classify call type before entering threat pipeline
+    # Uses working_transcript (already translated if non-English)
+    try:
+        classification = await _run_sync_with_timeout(classify_threat, 20, working_transcript)
+    except Exception as e:
+        pipeline_errors.append("claude_classification")
+        print(f"[{call_id}] WARNING: Claude classification failed: {e}")
+        classification = {
+            "call_type": "general",
+            "threat_level": 3,
+            "threat_type": "other",
+            "summary": working_transcript[:240],
+            "school_name": "Unknown School",
+            "recommended_action": "manual_review",
+        }
+
+    classification["pipeline_errors"] = pipeline_errors
+
+    if classification.get("call_type") == "attendance":
+        print(f"[{call_id}] Attendance call detected — skipping threat pipeline")
+        log_attendance(classification, call_id)
+        return classification
+
+    # ── Moss: semantic context search ─────────────────────────────────────────
     print(f"[{call_id}] Moss: semantic context search...")
     try:
         moss_context = await _run_sync_with_timeout(semantic_search_tips, 5, working_transcript[:300], call_id)
@@ -92,7 +95,7 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
     if moss_context:
         print(f"[{call_id}] Moss context: {moss_context[:80]}...")
 
-    # ── Claude: re-classify threat with Moss context injected ─────────────────
+    # ── Claude: final classification with Moss context + language note ────────
     print(f"[{call_id}] Claude: classifying threat...")
     enriched_transcript = working_transcript
     if moss_context:
@@ -105,6 +108,12 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
     except Exception as e:
         pipeline_errors.append("claude_enriched_classification")
         print(f"[{call_id}] WARNING: Enriched Claude classification failed: {e}")
+
+    # Carry multilingual metadata into classification for Supabase storage
+    if live_result.get("multilingual"):
+        classification.setdefault("caller_language", live_result.get("detected_language"))
+        classification.setdefault("multilingual_call", True)
+        classification.setdefault("english_translation", live_result.get("english_translation"))
 
     classification["pipeline_errors"] = pipeline_errors
     claude_level = classification.get("threat_level", 3)
