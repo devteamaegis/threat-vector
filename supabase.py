@@ -60,6 +60,12 @@ def log_tip_to_aegis(classification: dict, transcript: str, call_id: str, osint_
         "osint_findings": classification.get("osint_findings"),
         "prior_tips_context": classification.get("prior_tips_context"),
         "pipeline_errors": classification.get("pipeline_errors"),
+        "call_duration_seconds": classification.get("call_duration_seconds"),
+        "caller_emotion": classification.get("caller_emotion"),
+        "caller_tone": classification.get("caller_tone"),
+        "escalation_risk": classification.get("escalation_risk"),
+        "credibility_signals": classification.get("credibility_signals"),
+        "key_facts": classification.get("key_facts"),
     }
 
     district_id = os.getenv("NEXT_PUBLIC_DISTRICT_ID")

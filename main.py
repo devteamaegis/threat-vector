@@ -5,6 +5,8 @@ import uvicorn
 import asyncio
 import os
 import time
+import json as _json
+import requests as _requests
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -13,10 +15,50 @@ load_dotenv(Path(__file__).parent / ".env", override=True)
 
 from agent import run_threat_agent
 from live_call_simulator import stream_live_call, get_demo_transcript
-
 from cross_school_detector import get_district_threat_summary
 from counselor_notes import log_counselor_note, check_escalation_pattern
 from notify import send_sms_alert
+
+
+# ── AgentPhone transcript fetcher ─────────────────────────────────────────────
+
+def _agentphone_fetch_transcript(call_id: str) -> tuple[str, int]:
+    """
+    Fetch the actual transcript from AgentPhone API using the call ID.
+    Returns (user_transcript, duration_seconds).
+    The webhook sends transcripts:[] but the REST API has the real data.
+    """
+    api_key = os.getenv("AGENTPHONE_API_KEY", "")
+    if not api_key or call_id in ("unknown", ""):
+        return "", 0
+    try:
+        resp = _requests.get(
+            f"https://api.agentphone.ai/v1/calls/{call_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            print(f"[AgentPhone API] {resp.status_code}: {resp.text[:200]}")
+            return "", 0
+        data = resp.json()
+        duration = int(data.get("durationSeconds") or data.get("duration_seconds") or 0)
+        # Build transcript from user's side only (transcript field in each entry)
+        parts = []
+        for t in (data.get("transcripts") or []):
+            user_text = (t.get("transcript") or "").strip()
+            if user_text:
+                parts.append(user_text)
+        # Deduplicate consecutive duplicates (AgentPhone sends incremental updates)
+        deduped = []
+        for p in parts:
+            if not deduped or p != deduped[-1]:
+                deduped.append(p)
+        # Use the last/longest version of each utterance
+        full_transcript = " ".join(deduped).strip()
+        return full_transcript, duration
+    except Exception as e:
+        print(f"[AgentPhone API] fetch failed: {e}")
+        return "", 0
 
 app = FastAPI(title="Threat Vector", version="1.0.0")
 
@@ -42,7 +84,9 @@ def _extract_call_fields(body: dict) -> tuple[str, str, str, str, int]:
     call = body.get("call", body)
 
     call_id = (
-        call.get("id")
+        body.get("callId")          # AgentPhone camelCase top-level
+        or call.get("id")
+        or call.get("callId")
         or call.get("call_id")
         or body.get("id")
         or body.get("call_id")
@@ -96,27 +140,51 @@ CALL_ENDED_EVENTS = {
 
 
 # AgentPhone primary webhook path
+async def _process_real_call(call_id: str, transcript: str, recording_url: str, call_duration: int):
+    """
+    Wait briefly for AgentPhone to finalize transcript, then fetch via API
+    if the webhook delivered an empty transcript, then run the full pipeline.
+    """
+    if not transcript.strip() and call_id != "unknown":
+        print(f"[{call_id}] Transcript empty in webhook — fetching from AgentPhone API...")
+        await asyncio.sleep(3)  # Give AgentPhone 3s to finalize
+        transcript, api_duration = await asyncio.to_thread(_agentphone_fetch_transcript, call_id)
+        if api_duration > 0 and call_duration == 0:
+            call_duration = api_duration
+        print(f"[{call_id}] API transcript: {len(transcript)} chars, duration={call_duration}s")
+
+    if not transcript.strip():
+        print(f"[{call_id}] No transcript available — skipping pipeline")
+        return
+
+    # Estimate duration from word count if still 0
+    if call_duration == 0:
+        call_duration = max(5, len(transcript.split()) // 2)
+
+    school_guess = next(
+        (w for w in transcript.split() if len(w) > 4 and w[0].isupper()), "Unknown School"
+    )
+    await stream_live_call(call_id, transcript, school_guess, delay_ms=80)
+    await run_threat_agent(call_id, transcript, recording_url or None, call_duration)
+
+
 @app.post("/webhook/call")
 async def handle_call(request: Request):
     body = await request.json()
-    call_id, transcript, status, recording_url, call_duration = _extract_call_fields(body)
+    print(f"[webhook RAW] {_json.dumps(body)[:1000]}")
 
+    call_id, transcript, status, recording_url, call_duration = _extract_call_fields(body)
     print(f"[webhook] event={status!r} call_id={call_id!r} duration={call_duration}s transcript_len={len(transcript)}")
 
-    if status in CALL_ENDED_EVENTS and transcript.strip():
-        # Stream transcript to live_calls table FIRST so the dashboard shows the overlay immediately
-        school_guess = next(
-            (w for w in transcript.split() if len(w) > 4 and w[0].isupper()), "Unknown School"
-        )
-        asyncio.create_task(stream_live_call(call_id, transcript, school_guess, delay_ms=80))
-        asyncio.create_task(run_threat_agent(call_id, transcript, recording_url or None, call_duration))
+    if status in CALL_ENDED_EVENTS:
+        asyncio.create_task(_process_real_call(call_id, transcript, recording_url or "", call_duration))
         return JSONResponse({"status": "processing", "call_id": call_id})
 
     return JSONResponse({
         "status": "received",
         "call_id": call_id,
         "event": status,
-        "skipped": not transcript.strip(),
+        "skipped": status not in CALL_ENDED_EVENTS,
     })
 
 
