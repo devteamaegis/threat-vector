@@ -6,7 +6,7 @@ Used here to: (1) pay the OSINT agent for each search, (2) track spend per distr
 import os
 import requests
 
-SPONGE_BASE = os.getenv("SPONGE_BASE", "https://api.wallet.paysponge.com/mcp")
+SPONGE_BASE = os.getenv("SPONGE_BASE", "https://api.wallet.paysponge.com")
 
 def disburse_agent_payment(service: str, amount_cents: int, call_id: str, metadata: dict = {}) -> dict | None:
     """
@@ -16,9 +16,8 @@ def disburse_agent_payment(service: str, amount_cents: int, call_id: str, metada
     key = os.getenv("SPONGE_API_KEY")
     wallet_id = os.getenv("SPONGE_WALLET_ID")
 
-    if not key or key == "FILL_IN":
-        print(f"[{call_id}] WARNING: Sponge API key not set — skipping agent payment")
-        return None
+    if not key or key == "FILL_IN" or not wallet_id or wallet_id == "FILL_IN":
+        return None  # Sponge not configured — skip silently
 
     try:
         response = requests.post(
@@ -39,7 +38,7 @@ def disburse_agent_payment(service: str, amount_cents: int, call_id: str, metada
             tx_id = data.get("transaction_id", "demo")
             print(f"[{call_id}] Sponge: paid {service} ${amount_cents/100:.2f} (tx: {tx_id})")
             return data
-        print(f"[{call_id}] WARNING: Sponge returned {response.status_code}: {response.text[:100]}")
+        print(f"[{call_id}] Sponge: {response.status_code} ({service})")
     except Exception as e:
         print(f"[{call_id}] WARNING: Sponge payment failed: {e}")
     return None

@@ -178,6 +178,7 @@ def monte_carlo_score(transcript: str, n_simulations: int = 1000, prior: float =
             "features_hit": [],
             "feature_count": 0,
             "feature_trace": [],
+            "top_drivers": [],
             "n_simulations": n_simulations,
         }
 

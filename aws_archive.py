@@ -38,8 +38,12 @@ def archive_transcript(call_id: str, transcript: str, classification: dict) -> s
         print(f"[{call_id}] WARNING: boto3 not installed — skipping S3 archive")
         return None
 
+    # Guard against None transcript (e.g. when only recording_url was provided)
+    if not transcript:
+        transcript = ""
+
     timestamp = datetime.utcnow().isoformat()
-    school = classification.get("school_name", "unknown")
+    school = str(classification.get("school_name") or "unknown")
     level = classification.get("threat_level", 0)
 
     # Upload raw transcript
@@ -56,19 +60,20 @@ def archive_transcript(call_id: str, transcript: str, classification: dict) -> s
     }
 
     try:
+        meta = {"call_id": str(call_id), "school": str(school), "level": str(level)}
         s3.put_object(
             Bucket=bucket,
             Key=transcript_key,
             Body=transcript.encode("utf-8"),
             ContentType="text/plain",
-            Metadata={"call_id": call_id, "school": school, "level": str(level)},
+            Metadata=meta,
         )
         s3.put_object(
             Bucket=bucket,
             Key=report_key,
             Body=json.dumps(report, indent=2).encode("utf-8"),
             ContentType="application/json",
-            Metadata={"call_id": call_id, "school": school, "level": str(level)},
+            Metadata=meta,
         )
         uri = f"s3://{bucket}/{report_key}"
         print(f"[{call_id}] AWS S3: archived → {uri}")
