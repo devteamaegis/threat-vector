@@ -14,3 +14,4 @@ browser-use>=0.12.0
 langfuse
 numpy>=1.26.0
 deepgram-sdk>=3.0.0
+moss>=1.0.0

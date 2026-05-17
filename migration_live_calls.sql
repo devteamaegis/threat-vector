@@ -12,5 +12,7 @@ CREATE TABLE IF NOT EXISTS live_calls (
 );
 
 ALTER TABLE live_calls ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "anon read live_calls" ON live_calls;
+DROP POLICY IF EXISTS "service write live_calls" ON live_calls;
 CREATE POLICY "anon read live_calls" ON live_calls FOR SELECT USING (true);
 CREATE POLICY "service write live_calls" ON live_calls FOR ALL USING (true);

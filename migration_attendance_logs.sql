@@ -12,5 +12,7 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
 );
 
 ALTER TABLE attendance_logs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "anon read attendance_logs" ON attendance_logs;
+DROP POLICY IF EXISTS "service write attendance_logs" ON attendance_logs;
 CREATE POLICY "anon read attendance_logs" ON attendance_logs FOR SELECT USING (true);
 CREATE POLICY "service write attendance_logs" ON attendance_logs FOR ALL USING (true);

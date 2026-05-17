@@ -44,9 +44,22 @@ def log_tip_to_aegis(classification: dict, transcript: str, call_id: str, osint_
         "gemini_level": classification.get("gemini_level"),
         "gemini_reasoning": classification.get("gemini_reasoning"),
         "consensus": classification.get("consensus"),
+        "three_model_consensus": classification.get("three_model_consensus"),
+        "bayes_probability_pct": classification.get("bayes_probability_pct"),
+        "bayes_ci_low_pct": classification.get("bayes_ci_low_pct"),
+        "bayes_ci_high_pct": classification.get("bayes_ci_high_pct"),
+        "bayes_top_drivers": classification.get("bayes_top_drivers"),
+        "bayes_features_hit": classification.get("bayes_features_hit"),
         "s3_archive_uri": classification.get("s3_archive_uri"),
         "deepgram_confidence": classification.get("deepgram_confidence"),
         "deepgram_language": classification.get("deepgram_language"),
+        "cross_school_alert": classification.get("cross_school_alert"),
+        "threat_window": classification.get("threat_window"),
+        "threat_window_confidence": classification.get("threat_window_confidence"),
+        "dispatch_brief": classification.get("dispatch_brief"),
+        "osint_findings": classification.get("osint_findings"),
+        "prior_tips_context": classification.get("prior_tips_context"),
+        "pipeline_errors": classification.get("pipeline_errors"),
     }
 
     district_id = os.getenv("NEXT_PUBLIC_DISTRICT_ID")

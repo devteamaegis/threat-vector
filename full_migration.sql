@@ -14,6 +14,7 @@ ALTER TABLE tips
   ADD COLUMN IF NOT EXISTS call_duration_seconds integer,
   ADD COLUMN IF NOT EXISTS caller_language text,
   ADD COLUMN IF NOT EXISTS multilingual_call boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS english_translation text,
   ADD COLUMN IF NOT EXISTS gemini_level integer,
   ADD COLUMN IF NOT EXISTS gemini_reasoning text,
   ADD COLUMN IF NOT EXISTS consensus boolean,
@@ -25,7 +26,14 @@ ALTER TABLE tips
   ADD COLUMN IF NOT EXISTS bayes_features_hit jsonb,
   ADD COLUMN IF NOT EXISTS s3_archive_uri text,
   ADD COLUMN IF NOT EXISTS deepgram_confidence numeric,
-  ADD COLUMN IF NOT EXISTS deepgram_language text;
+  ADD COLUMN IF NOT EXISTS deepgram_language text,
+  ADD COLUMN IF NOT EXISTS cross_school_alert text,
+  ADD COLUMN IF NOT EXISTS threat_window text,
+  ADD COLUMN IF NOT EXISTS threat_window_confidence text,
+  ADD COLUMN IF NOT EXISTS dispatch_brief text,
+  ADD COLUMN IF NOT EXISTS osint_findings text,
+  ADD COLUMN IF NOT EXISTS prior_tips_context text,
+  ADD COLUMN IF NOT EXISTS pipeline_errors jsonb;
 
 
 -- === migration_attendance_logs.sql ===
@@ -43,6 +51,8 @@ CREATE TABLE IF NOT EXISTS attendance_logs (
 );
 
 ALTER TABLE attendance_logs ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "anon read attendance_logs" ON attendance_logs;
+DROP POLICY IF EXISTS "service write attendance_logs" ON attendance_logs;
 CREATE POLICY "anon read attendance_logs" ON attendance_logs FOR SELECT USING (true);
 CREATE POLICY "service write attendance_logs" ON attendance_logs FOR ALL USING (true);
 
@@ -62,6 +72,8 @@ CREATE TABLE IF NOT EXISTS live_calls (
 );
 
 ALTER TABLE live_calls ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "anon read live_calls" ON live_calls;
+DROP POLICY IF EXISTS "service write live_calls" ON live_calls;
 CREATE POLICY "anon read live_calls" ON live_calls FOR SELECT USING (true);
 CREATE POLICY "service write live_calls" ON live_calls FOR ALL USING (true);
 

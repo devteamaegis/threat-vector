@@ -135,6 +135,11 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
     print(f"[{call_id}] Gemini: independent threat verification...")
     try:
         gemini_result = await _run_sync_with_timeout(gemini_verify, 8, working_transcript, claude_level, call_id)
+        try:
+            disburse_agent_payment("gemini-verify", 3, call_id, {"school": school})
+        except Exception as e:
+            pipeline_errors.append("sponge_gemini_payment")
+            print(f"[{call_id}] WARNING: Sponge Gemini payment failed: {e}")
     except Exception as e:
         pipeline_errors.append("gemini_verify")
         print(f"[{call_id}] WARNING: Gemini verify failed: {e}")
@@ -178,6 +183,12 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
         print(f"[{call_id}] WARNING: Supermemory search failed: {e}")
         prior_tips = ""
     classification["prior_tips_context"] = prior_tips
+    if prior_tips:
+        try:
+            disburse_agent_payment("supermemory-search", 1, call_id, {"school": school})
+        except Exception as e:
+            pipeline_errors.append("sponge_supermemory_payment")
+            print(f"[{call_id}] WARNING: Sponge Supermemory payment failed: {e}")
 
     # ── Browser Use: OSINT (level 3+) ─────────────────────────────────────────
     osint_summary = ""
