@@ -112,3 +112,54 @@ def log_tip_to_aegis(classification: dict, transcript: str, call_id: str, osint_
     except Exception as e:
         print(f"[{call_id}] WARNING: Supabase log failed: {e}")
     return None
+
+def update_tip_enriched(tip_id: str | None, call_id: str, fields: dict) -> bool:
+    """PATCH an existing tip row with enrichment data from parallel pipeline steps."""
+    if not tip_id or not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    payload = {k: v for k, v in fields.items() if v is not None}
+    if not payload:
+        return False
+    try:
+        response = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/tips",
+            params={"id": f"eq.{tip_id}"},
+            headers={**_headers(), "Prefer": "return=minimal"},
+            json=payload,
+            timeout=10,
+        )
+        if response.status_code in (200, 204):
+            print(f"[{call_id}] Supabase: tip enriched (fields: {list(payload.keys())})")
+            return True
+        print(f"[{call_id}] WARNING: Supabase enrich failed {response.status_code}: {response.text[:200]}")
+    except Exception as e:
+        print(f"[{call_id}] WARNING: Supabase enrich failed: {e}")
+    return False
+
+
+def update_tip_geo(tip_id: str | None, call_id: str, call_lat: float | None, call_lng: float | None, location_context: str | None):
+    if not tip_id or not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    payload = {
+        "call_lat": call_lat,
+        "call_lng": call_lng,
+        "location_context": location_context,
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+    if not payload:
+        return False
+    try:
+        response = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/tips",
+            params={"id": f"eq.{tip_id}"},
+            headers={**_headers(), "Prefer": "return=minimal"},
+            json=payload,
+            timeout=8,
+        )
+        if response.status_code in (200, 204):
+            print(f"[{call_id}] Supabase: GPS/location context updated")
+            return True
+        print(f"[{call_id}] WARNING: Supabase GPS update failed {response.status_code}: {response.text[:200]}")
+    except Exception as e:
+        print(f"[{call_id}] WARNING: Supabase GPS update failed: {e}")
+    return False

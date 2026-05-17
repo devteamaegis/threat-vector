@@ -1,9 +1,13 @@
 import asyncio
+import math
+import os
+import re
+import requests
 from classifier import classify_threat, generate_email_brief
 from osint import run_osint
 from notify import send_sms_alert, send_email_brief
 from memory import store_tip_memory, search_prior_tips
-from supabase import log_tip_to_aegis
+from supabase import log_tip_to_aegis, update_tip_geo, update_tip_enriched
 from moss_search import semantic_search_tips, index_tip
 from stripe_billing import charge_for_tip
 from sponge_payments import disburse_agent_payment
@@ -18,10 +22,79 @@ from predict_window import predict_threat_window
 from dispatch_brief import format_dispatch_brief
 from datetime import datetime
 
+_GEO_CACHE: dict[str, tuple[float, float] | None] = {}
+LOCATION_KEYWORDS = ("room", "gym", "cafeteria", "parking", "hallway", "bathroom", "auditorium", "library")
+
 async def _run_sync_with_timeout(func, timeout: int, *args, **kwargs):
     return await asyncio.wait_for(asyncio.to_thread(func, *args, **kwargs), timeout=timeout)
 
-async def run_threat_agent(call_id: str, transcript: str, recording_url: str | None = None, call_duration_seconds: int = 0):
+def geolocate_school(school_name: str) -> tuple[float, float] | None:
+    school = (school_name or "").strip()
+    if not school or school.lower() == "unknown school":
+        return None
+    if school in _GEO_CACHE:
+        return _GEO_CACHE[school]
+    try:
+        response = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": school, "format": "json", "limit": 1},
+            headers={"User-Agent": "ThreatVector/1.0 school-safety-demo"},
+            timeout=8,
+        )
+        if response.status_code != 200:
+            _GEO_CACHE[school] = None
+            return None
+        data = response.json()
+        if not data:
+            _GEO_CACHE[school] = None
+            return None
+        coords = (float(data[0]["lat"]), float(data[0]["lon"]))
+        _GEO_CACHE[school] = coords
+        return coords
+    except Exception:
+        _GEO_CACHE[school] = None
+        return None
+
+def _caller_coords(caller_location: dict | None) -> tuple[float, float] | None:
+    if not caller_location:
+        return None
+    lat = caller_location.get("lat") or caller_location.get("latitude") or caller_location.get("call_lat")
+    lng = caller_location.get("lng") or caller_location.get("lon") or caller_location.get("longitude") or caller_location.get("call_lng")
+    try:
+        lat_f = float(lat)
+        lng_f = float(lng)
+    except (TypeError, ValueError):
+        return None
+    if math.isfinite(lat_f) and math.isfinite(lng_f):
+        return lat_f, lng_f
+    return None
+
+def _extract_location_context(classification: dict) -> str | None:
+    sources = []
+    facts = classification.get("key_facts") or []
+    if isinstance(facts, list):
+        sources.extend(str(f) for f in facts)
+    brief = classification.get("dispatch_brief")
+    if brief:
+        sources.append(str(brief))
+    for text in sources:
+        lowered = text.lower()
+        if any(k in lowered for k in LOCATION_KEYWORDS):
+            match = re.search(
+                r"((?:room\s+\w+)|(?:\w+\s+gym)|(?:gym)|(?:cafeteria)|(?:parking\s+(?:lot\s*)?\w*)|(?:hallway)|(?:bathroom)|(?:auditorium)|(?:library))",
+                text,
+                re.IGNORECASE,
+            )
+            return (match.group(1) if match else text).strip()[:160]
+    return None
+
+async def run_threat_agent(
+    call_id: str,
+    transcript: str,
+    recording_url: str | None = None,
+    call_duration_seconds: int = 0,
+    caller_location: dict | None = None,
+):
     print(f"[{call_id}] Starting threat agent pipeline...")
     pipeline_errors: list[str] = []
 
@@ -120,227 +193,340 @@ async def run_threat_agent(call_id: str, transcript: str, recording_url: str | N
     school = classification.get("school_name", "Unknown School")
     print(f"[{call_id}] Claude: level {claude_level}/5, school: {school}")
 
-    # ── Bayesian + Monte Carlo scoring ───────────────────────────────────────
-    print(f"[{call_id}] Bayesian/MC: scoring verbal context clues...")
-    try:
-        bayes = await _run_sync_with_timeout(monte_carlo_score, 8, working_transcript, n_simulations=1000)
-        bayes_level = probability_to_level(bayes["mean_probability"])
-        classification["bayes_probability_pct"] = bayes["mean_probability_pct"]
-        classification["bayes_ci_low_pct"]      = bayes["ci_low_pct"]
-        classification["bayes_ci_high_pct"]     = bayes["ci_high_pct"]
-        classification["bayes_top_drivers"]     = bayes["top_drivers"]
-        classification["bayes_features_hit"]    = bayes["features_hit"]
-        print(
-            f"[{call_id}] Bayesian: {bayes['mean_probability_pct']}% "
-            f"[{bayes['ci_low_pct']}-{bayes['ci_high_pct']}% CI] "
-            f"level {bayes_level}/5 | drivers: {[d['keyword'] for d in bayes['top_drivers']]}"
-        )
-    except Exception as e:
-        pipeline_errors.append("bayesian_score")
-        print(f"[{call_id}] WARNING: Bayesian scoring failed: {e}")
-        bayes_level = claude_level
+    # Ensure call_duration_seconds is set before early INSERT
+    if call_duration_seconds == 0 and transcript.strip():
+        call_duration_seconds = max(5, len(transcript.split()) // 2)
+    classification["call_duration_seconds"] = call_duration_seconds
 
-    # ── Google DeepMind: Gemini second-opinion verification ───────────────────
-    print(f"[{call_id}] Gemini: independent threat verification...")
-    try:
-        gemini_result = await _run_sync_with_timeout(gemini_verify, 8, working_transcript, claude_level, call_id)
+    # ── EARLY Supabase INSERT: show card on dashboard NOW (~18s from call end) ─
+    # The dashboard sees this tip immediately. We'll PATCH with enrichment next.
+    print(f"[{call_id}] Supabase: EARLY INSERT — making tip visible on dashboard...")
+    tip_id = log_tip_to_aegis(classification, transcript, call_id, "")
+    print(f"[{call_id}] Supabase: preliminary tip ID {tip_id} — dashboard updating now")
+
+    # Seed coords from caller GPS if present; geocode school otherwise (done in parallel)
+    coords = _caller_coords(caller_location)
+
+    # ── PARALLEL ENRICHMENT: two branches run concurrently ───────────────────
+    # Branch A: Moss semantic search → Claude #2 (enriched classification)
+    # Branch B: Geocode + Bayesian MC + Gemini verify + Supermemory (all independent)
+    # Total wall time ≈ max(branch_A, branch_B) instead of sum.
+
+    async def _branch_moss_claude():
+        """Moss context search → second Claude classification with context."""
+        ctx = ""
+        try:
+            print(f"[{call_id}] Moss: semantic context search...")
+            ctx = await _run_sync_with_timeout(semantic_search_tips, 5, working_transcript[:300], call_id)
+            if ctx:
+                print(f"[{call_id}] Moss context: {ctx[:80]}...")
+        except Exception as e:
+            pipeline_errors.append("moss_search")
+            print(f"[{call_id}] WARNING: Moss search failed: {e}")
+
+        enriched = working_transcript
+        if ctx:
+            enriched = f"{working_transcript}\n\n[Prior semantic context: {ctx}]"
+        if classification_note:
+            enriched = f"{classification_note}\n\n{enriched}"
+
+        try:
+            print(f"[{call_id}] Claude: enriched re-classification with Moss context...")
+            cls2 = await _run_sync_with_timeout(classify_threat, 20, enriched)
+            return cls2, ctx
+        except Exception as e:
+            pipeline_errors.append("claude_enriched_classification")
+            print(f"[{call_id}] WARNING: Enriched Claude classification failed: {e}")
+            return classification, ctx
+
+    async def _branch_parallel():
+        """Geocode + Bayesian MC + Gemini verify + Supermemory — all at once."""
+        print(f"[{call_id}] Parallel: Geocode + Bayesian + Gemini verify + Supermemory...")
+        results = await asyncio.gather(
+            # Geocode (skip if caller GPS already known)
+            asyncio.to_thread(geolocate_school, school) if coords is None else asyncio.sleep(0, result=coords),
+            # Bayesian Monte Carlo (500 sims — fast and still accurate)
+            _run_sync_with_timeout(monte_carlo_score, 8, working_transcript, n_simulations=500),
+            # Gemini second-opinion
+            _run_sync_with_timeout(gemini_verify, 10, working_transcript, claude_level, call_id),
+            # Supermemory prior tips
+            _run_sync_with_timeout(
+                search_prior_tips, 8, school,
+                classification.get("threat_type", ""),
+                classification.get("key_facts") or [],
+            ),
+            return_exceptions=True,
+        )
+        return results
+
+    # Run both branches concurrently
+    (cls2, moss_context), parallel_results = await asyncio.gather(
+        _branch_moss_claude(),
+        _branch_parallel(),
+    )
+    geo_res, bayes_res, gemini_res, prior_tips_res = parallel_results
+
+    # ── Unpack geocode ────────────────────────────────────────────────────────
+    if isinstance(geo_res, Exception):
+        pipeline_errors.append("school_geocode")
+        print(f"[{call_id}] WARNING: school geocode failed: {geo_res}")
+        geo_res = coords  # fall back to caller GPS if any
+    resolved_coords = geo_res if not isinstance(geo_res, Exception) else None
+
+    # ── Unpack Bayesian ───────────────────────────────────────────────────────
+    if isinstance(bayes_res, Exception):
+        pipeline_errors.append("bayesian_score")
+        print(f"[{call_id}] WARNING: Bayesian scoring failed: {bayes_res}")
+        bayes_level = claude_level
+        bayes_res = None
+    else:
+        bayes_level = probability_to_level(bayes_res["mean_probability"])
+        cls2["bayes_probability_pct"] = bayes_res["mean_probability_pct"]
+        cls2["bayes_ci_low_pct"]      = bayes_res["ci_low_pct"]
+        cls2["bayes_ci_high_pct"]     = bayes_res["ci_high_pct"]
+        cls2["bayes_top_drivers"]     = bayes_res["top_drivers"]
+        cls2["bayes_features_hit"]    = bayes_res["features_hit"]
+        print(
+            f"[{call_id}] Bayesian: {bayes_res['mean_probability_pct']}% "
+            f"[{bayes_res['ci_low_pct']}-{bayes_res['ci_high_pct']}% CI] "
+            f"level {bayes_level}/5 | drivers: {[d['keyword'] for d in bayes_res['top_drivers']]}"
+        )
+
+    # ── Unpack Gemini verify ──────────────────────────────────────────────────
+    if isinstance(gemini_res, Exception):
+        pipeline_errors.append("gemini_verify")
+        print(f"[{call_id}] WARNING: Gemini verify failed: {gemini_res}")
+        gemini_res = {
+            "gemini_level": claude_level,
+            "gemini_reasoning": "Gemini unavailable; defaulted to Claude level.",
+            "consensus": True,
+        }
+    else:
         try:
             disburse_agent_payment("gemini-verify", 3, call_id, {"school": school})
         except Exception as e:
             pipeline_errors.append("sponge_gemini_payment")
             print(f"[{call_id}] WARNING: Sponge Gemini payment failed: {e}")
-    except Exception as e:
-        pipeline_errors.append("gemini_verify")
-        print(f"[{call_id}] WARNING: Gemini verify failed: {e}")
-        gemini_result = {
-            "gemini_level": claude_level,
-            "gemini_reasoning": "Gemini unavailable; defaulted to Claude level.",
-            "consensus": True,
-            "consensus_level": claude_level,
-        }
 
-    classification["gemini_level"] = gemini_result.get("gemini_level")
-    classification["gemini_reasoning"] = gemini_result.get("gemini_reasoning")
-    classification["consensus"] = gemini_result.get("consensus", False)
-    classification["caller_language"] = live_result.get("detected_language")
-    classification["english_translation"] = live_result.get("english_translation")
-    classification["multilingual_call"] = live_result.get("multilingual", False)
+    # ── Unpack Supermemory ────────────────────────────────────────────────────
+    if isinstance(prior_tips_res, Exception):
+        pipeline_errors.append("supermemory_search")
+        print(f"[{call_id}] WARNING: Supermemory search failed: {prior_tips_res}")
+        prior_tips = ""
+    else:
+        prior_tips = prior_tips_res or ""
+        if prior_tips:
+            try:
+                disburse_agent_payment("supermemory-search", 1, call_id, {"school": school})
+            except Exception as e:
+                pipeline_errors.append("sponge_supermemory_payment")
+                print(f"[{call_id}] WARNING: Sponge Supermemory payment failed: {e}")
+
+    # ── Merge enriched classification into cls2 ───────────────────────────────
+    if live_result.get("multilingual"):
+        cls2.setdefault("caller_language", live_result.get("detected_language"))
+        cls2.setdefault("multilingual_call", True)
+        cls2.setdefault("english_translation", live_result.get("english_translation"))
+
+    cls2["gemini_level"]      = gemini_res.get("gemini_level")
+    cls2["gemini_reasoning"]  = gemini_res.get("gemini_reasoning")
+    cls2["consensus"]         = gemini_res.get("consensus", False)
+    cls2["caller_language"]   = live_result.get("detected_language")
+    cls2["english_translation"] = live_result.get("english_translation")
+    cls2["multilingual_call"] = live_result.get("multilingual", False)
+    cls2["prior_tips_context"] = prior_tips
+    cls2["call_duration_seconds"] = call_duration_seconds
     if deepgram_result:
-        classification["deepgram_confidence"] = deepgram_result.get("confidence")
-        classification["deepgram_language"] = deepgram_result.get("language")
+        cls2["deepgram_confidence"] = deepgram_result.get("confidence")
+        cls2["deepgram_language"]   = deepgram_result.get("language")
 
-    gemini_l = gemini_result.get("gemini_level") or claude_level
+    gemini_l = gemini_res.get("gemini_level") or claude_level
     three_model_consensus = abs(claude_level - gemini_l) <= 1 and abs(claude_level - bayes_level) <= 1
     final_level = max(claude_level, gemini_l, bayes_level)
-    classification["three_model_consensus"] = three_model_consensus
-    classification["threat_level"] = final_level
+    cls2["three_model_consensus"] = three_model_consensus
+    cls2["threat_level"] = final_level
+    cls2["pipeline_errors"] = pipeline_errors
+
+    if resolved_coords:
+        cls2["call_lat"] = resolved_coords[0]
+        cls2["call_lng"] = resolved_coords[1]
+    location_context = _extract_location_context(cls2)
+    if location_context:
+        cls2["location_context"] = location_context
+
     print(
         f"[{call_id}] 3-model: Claude={claude_level} Gemini={gemini_l} Bayes={bayes_level} "
         f"-> final={final_level} ({'CONSENSUS' if three_model_consensus else 'DIVERGENT'})"
     )
 
-    # ── Supermemory: multi-dimensional prior tips context ─────────────────────
-    print(f"[{call_id}] Supermemory: checking prior tips (school + type + behavioral)...")
-    try:
-        prior_tips = await _run_sync_with_timeout(
-            search_prior_tips, 8, school,
-            classification.get("threat_type", ""),
-            classification.get("key_facts") or [],
-        )
-    except Exception as e:
-        pipeline_errors.append("supermemory_search")
-        print(f"[{call_id}] WARNING: Supermemory search failed: {e}")
-        prior_tips = ""
-    classification["prior_tips_context"] = prior_tips
-    if prior_tips:
-        try:
-            disburse_agent_payment("supermemory-search", 1, call_id, {"school": school})
-        except Exception as e:
-            pipeline_errors.append("sponge_supermemory_payment")
-            print(f"[{call_id}] WARNING: Sponge Supermemory payment failed: {e}")
+    # ── Supabase PATCH: update the early INSERT row with full enrichment ───────
+    print(f"[{call_id}] Supabase: patching tip {tip_id} with enrichment data...")
+    urgency_map  = {1:"low",2:"low",3:"medium",4:"high",5:"critical"}
+    severity_map = {1:"low",2:"low",3:"medium",4:"high",5:"critical"}
+    update_tip_enriched(tip_id, call_id, {
+        "urgency":               urgency_map.get(final_level, "medium"),
+        "severity":              severity_map.get(final_level, "medium"),
+        "ai_triage_score":       final_level * 2,
+        "ai_summary":            cls2.get("summary", ""),
+        "ai_recommended_action": cls2.get("recommended_action", "monitor"),
+        "school_name":           cls2.get("school_name"),
+        "category":              cls2.get("threat_type", "other"),
+        "gemini_level":          cls2.get("gemini_level"),
+        "gemini_reasoning":      cls2.get("gemini_reasoning"),
+        "consensus":             cls2.get("consensus"),
+        "three_model_consensus": cls2.get("three_model_consensus"),
+        "bayes_probability_pct": cls2.get("bayes_probability_pct"),
+        "bayes_ci_low_pct":      cls2.get("bayes_ci_low_pct"),
+        "bayes_ci_high_pct":     cls2.get("bayes_ci_high_pct"),
+        "bayes_top_drivers":     cls2.get("bayes_top_drivers"),
+        "bayes_features_hit":    cls2.get("bayes_features_hit"),
+        "caller_language":       cls2.get("caller_language"),
+        "english_translation":   cls2.get("english_translation"),
+        "multilingual_call":     cls2.get("multilingual_call"),
+        "prior_tips_context":    cls2.get("prior_tips_context"),
+        "call_lat":              cls2.get("call_lat"),
+        "call_lng":              cls2.get("call_lng"),
+        "location_context":      cls2.get("location_context"),
+        "pipeline_errors":       cls2.get("pipeline_errors"),
+    })
 
-    # ── Browser Use: OSINT (level 3+) ─────────────────────────────────────────
-    osint_summary = ""
-    if final_level >= 3:
-        print(f"[{call_id}] Browser Use: OSINT search...")
+    # Alias cls2 as classification for the rest of the pipeline
+    classification = cls2
+
+    # ── Post-dashboard tasks (fire-and-forget — don't block return) ───────────
+    async def _post_dashboard_tasks():
+        """OSINT, archive, SMS, email, Stripe — run after dashboard is already updated."""
+        nonlocal pipeline_errors
+
+        # Attendance anomaly
         try:
-            osint_summary = await asyncio.wait_for(
-                run_osint(
-                    school,
-                    classification.get("threat_type", ""),
-                    classification.get("subject_description", "")
-                ),
-                timeout=15,
+            from attendance_anomaly import check_attendance_anomaly
+            anomaly = check_attendance_anomaly(school, call_id)
+            if anomaly.get("anomaly"):
+                print(f"[{call_id}] ATTENDANCE ANOMALY: {anomaly['message']}")
+                classification["attendance_anomaly"] = anomaly["message"]
+        except Exception as e:
+            pipeline_errors.append("attendance_anomaly")
+
+        # Cross-school pattern
+        cross_school_alert = None
+        try:
+            cross_school_alert = detect_cross_school_pattern(school, classification.get("threat_type", ""), call_id)
+        except Exception as e:
+            pipeline_errors.append("cross_school")
+        if cross_school_alert:
+            classification["cross_school_alert"] = cross_school_alert["message"]
+            print(f"[{call_id}] CROSS-SCHOOL ALERT: {cross_school_alert['message'][:80]}")
+
+        # Predictive threat window
+        try:
+            threat_window = predict_threat_window(working_transcript, classification)
+            classification["threat_window"] = threat_window.get("window")
+            classification["threat_window_confidence"] = threat_window.get("confidence")
+        except Exception as e:
+            pipeline_errors.append("threat_window")
+
+        # Dispatch brief (level 4+)
+        if final_level >= 4:
+            try:
+                brief = format_dispatch_brief(classification, call_id)
+                classification["dispatch_brief"] = brief
+                classification["location_context"] = classification.get("location_context") or _extract_location_context(classification)
+                print(f"[{call_id}] Dispatch brief generated ({len(brief)} chars)")
+            except Exception as e:
+                pipeline_errors.append("dispatch_brief")
+
+        # OSINT (level 3+)
+        osint_summary = ""
+        if final_level >= 3:
+            print(f"[{call_id}] Browser Use: OSINT search...")
+            try:
+                osint_summary = await asyncio.wait_for(
+                    run_osint(school, classification.get("threat_type", ""), classification.get("subject_description", "")),
+                    timeout=15,
+                )
+            except Exception as e:
+                pipeline_errors.append("osint")
+                osint_summary = "OSINT unavailable"
+            classification["osint_findings"] = osint_summary
+            print(f"[{call_id}] OSINT: {osint_summary[:100]}")
+            try:
+                disburse_agent_payment("browser-use-osint", 2, call_id, {"school": school})
+            except Exception:
+                pass
+
+        # AWS S3 archive
+        try:
+            s3_uri = await _run_sync_with_timeout(archive_transcript, 10, call_id, transcript, classification)
+            if s3_uri:
+                classification["s3_archive_uri"] = s3_uri
+        except Exception as e:
+            pipeline_errors.append("aws_archive")
+            print(f"[{call_id}] WARNING: AWS archive failed: {e}")
+
+        # Supermemory store
+        try:
+            await _run_sync_with_timeout(store_tip_memory, 5, classification, call_id)
+        except Exception as e:
+            pipeline_errors.append("supermemory_store")
+
+        # Moss index
+        try:
+            index_tip(
+                f"{school} {classification.get('threat_type','')} {classification.get('summary','')}",
+                {"school": school, "level": final_level, "call_id": call_id},
+                call_id,
             )
         except Exception as e:
-            pipeline_errors.append("osint")
-            print(f"[{call_id}] WARNING: OSINT failed: {e}")
-            osint_summary = "OSINT unavailable"
-        classification["osint_findings"] = osint_summary
-        print(f"[{call_id}] OSINT: {osint_summary[:100]}")
+            pipeline_errors.append("moss_index")
+
+        # Patch final enrichment (OSINT, archive, dispatch brief) back to Supabase
+        update_tip_enriched(tip_id, call_id, {
+            "osint_findings":           classification.get("osint_findings"),
+            "s3_archive_uri":           classification.get("s3_archive_uri"),
+            "dispatch_brief":           classification.get("dispatch_brief"),
+            "threat_window":            classification.get("threat_window"),
+            "threat_window_confidence": classification.get("threat_window_confidence"),
+            "cross_school_alert":       classification.get("cross_school_alert"),
+            "pipeline_errors":          pipeline_errors,
+        })
+
+        # Twilio SMS
         try:
-            disburse_agent_payment("browser-use-osint", 2, call_id, {"school": school})
+            send_sms_alert(classification, call_id)
+            disburse_agent_payment("twilio-sms", 1, call_id, {"school": school})
         except Exception as e:
-            pipeline_errors.append("sponge_osint_payment")
-            print(f"[{call_id}] WARNING: Sponge OSINT payment failed: {e}")
+            pipeline_errors.append("sms_alert")
+            print(f"[{call_id}] SMS error: {e}")
 
-    # ── Supabase: log to Threat Vector dashboard ──────────────────────────────
-    # Ensure call_duration_seconds is always set (used by dashboard to distinguish real calls)
-    if call_duration_seconds == 0 and transcript.strip():
-        call_duration_seconds = max(5, len(transcript.split()) // 2)
-    classification["call_duration_seconds"] = call_duration_seconds
-
-    print(f"[{call_id}] Supabase: logging to dashboard...")
-    tip_id = log_tip_to_aegis(classification, transcript, call_id, osint_summary)
-    print(f"[{call_id}] Supabase: tip ID {tip_id}")
-
-    # ── Attendance anomaly detection ──────────────────────────────────────────
-    try:
-        from attendance_anomaly import check_attendance_anomaly
-        anomaly = check_attendance_anomaly(school, call_id)
-        if anomaly.get("anomaly"):
-            print(f"[{call_id}] ATTENDANCE ANOMALY: {anomaly['message']}")
-            classification["attendance_anomaly"] = anomaly["message"]
-    except Exception as e:
-        pipeline_errors.append("attendance_anomaly")
-        print(f"[{call_id}] WARNING: Attendance anomaly check failed: {e}")
-
-    # ── Cross-school pattern detection ────────────────────────────────────────
-    print(f"[{call_id}] Cross-school: checking for coordinated threat patterns...")
-    try:
-        cross_school_alert = detect_cross_school_pattern(school, classification.get("threat_type", ""), call_id)
-    except Exception as e:
-        pipeline_errors.append("cross_school")
-        print(f"[{call_id}] WARNING: Cross-school detection failed: {e}")
-        cross_school_alert = None
-    if cross_school_alert:
-        classification["cross_school_alert"] = cross_school_alert["message"]
-        print(f"[{call_id}] CROSS-SCHOOL ALERT: {cross_school_alert['message'][:80]}")
-
-    # ── Predictive threat window ──────────────────────────────────────────────
-    try:
-        threat_window = predict_threat_window(working_transcript, classification)
-        classification["threat_window"] = threat_window.get("window")
-        classification["threat_window_confidence"] = threat_window.get("confidence")
-        print(f"[{call_id}] Threat window: {threat_window.get('window')} ({threat_window.get('confidence')} confidence)")
-    except Exception as e:
-        pipeline_errors.append("threat_window")
-        print(f"[{call_id}] WARNING: Threat window failed: {e}")
-
-    # ── Dispatch brief (level 4+) ─────────────────────────────────────────────
-    if final_level >= 4:
+        # AgentMail email
         try:
-            brief = format_dispatch_brief(classification, call_id)
-            classification["dispatch_brief"] = brief
-            print(f"[{call_id}] Dispatch brief generated ({len(brief)} chars)")
+            tip_data = {
+                **classification,
+                "call_id": call_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "transcript": transcript,
+            }
+            subject, body = generate_email_brief(tip_data)
+            send_email_brief(subject, body, call_id, classification=classification)
+            disburse_agent_payment("agentmail-brief", 1, call_id, {"school": school})
         except Exception as e:
-            pipeline_errors.append("dispatch_brief")
-            print(f"[{call_id}] WARNING: Dispatch brief failed: {e}")
+            pipeline_errors.append("email_brief")
+            print(f"[{call_id}] Email error: {e}")
 
-    # ── AWS S3: archive transcript + report ───────────────────────────────────
-    print(f"[{call_id}] AWS S3: archiving transcript...")
-    try:
-        s3_uri = await _run_sync_with_timeout(archive_transcript, 10, call_id, transcript, classification)
-    except Exception as e:
-        pipeline_errors.append("aws_archive")
-        print(f"[{call_id}] WARNING: AWS archive failed: {e}")
-        s3_uri = None
-    if s3_uri:
-        classification["s3_archive_uri"] = s3_uri
+        # Stripe billing
+        try:
+            charge_for_tip(classification, call_id)
+        except Exception as e:
+            pipeline_errors.append("stripe")
+            print(f"[{call_id}] Stripe error: {e}")
 
-    # ── Supermemory: store for future pattern matching ────────────────────────
-    print(f"[{call_id}] Supermemory: storing tip memory...")
-    try:
-        await _run_sync_with_timeout(store_tip_memory, 5, classification, call_id)
-    except Exception as e:
-        pipeline_errors.append("supermemory_store")
-        print(f"[{call_id}] WARNING: Supermemory store failed: {e}")
+        enrichment_count = sum(1 for s in [osint_summary, prior_tips, moss_context, gemini_res.get("gemini_level")] if s)
+        print(f"[{call_id}] ✓ Post-processing complete — {enrichment_count} enrichment sources")
 
-    # ── Moss: index tip for future semantic search ────────────────────────────
-    try:
-        index_tip(
-            f"{school} {classification.get('threat_type','')} {classification.get('summary','')}",
-            {"school": school, "level": final_level, "call_id": call_id},
-            call_id
-        )
-    except Exception as e:
-        pipeline_errors.append("moss_index")
-        print(f"[{call_id}] WARNING: Moss index failed: {e}")
+    # Fire background tasks without blocking the return
+    asyncio.create_task(_post_dashboard_tasks())
 
-    # ── Twilio: SMS to principal ──────────────────────────────────────────────
-    print(f"[{call_id}] Twilio: sending SMS alert...")
-    try:
-        send_sms_alert(classification, call_id)
-        disburse_agent_payment("twilio-sms", 1, call_id, {"school": school})
-    except Exception as e:
-        pipeline_errors.append("sms_alert")
-        print(f"[{call_id}] SMS error: {e}")
-
-    # ── AgentMail: email brief to safety officer ──────────────────────────────
-    print(f"[{call_id}] AgentMail: sending threat brief email...")
-    try:
-        tip_data = {
-            **classification,
-            "call_id": call_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "transcript": transcript,
-        }
-        subject, body = generate_email_brief(tip_data)
-        send_email_brief(subject, body, call_id, classification=classification)
-        disburse_agent_payment("agentmail-brief", 1, call_id, {"school": school})
-    except Exception as e:
-        pipeline_errors.append("email_brief")
-        print(f"[{call_id}] Email error: {e}")
-
-    # ── Stripe: bill district for tip processing ──────────────────────────────
-    print(f"[{call_id}] Stripe: billing district...")
-    try:
-        charge_for_tip(classification, call_id)
-    except Exception as e:
-        pipeline_errors.append("stripe")
-        print(f"[{call_id}] Stripe error: {e}")
-
-    classification["pipeline_errors"] = pipeline_errors
-    enrichment_count = sum(1 for s in [osint_summary, prior_tips, moss_context, gemini_result.get("gemini_level")] if s)
-    print(f"[{call_id}] ✓ Pipeline complete — level {final_level}/5, {enrichment_count} enrichment sources")
+    enrichment_count = sum(1 for s in [prior_tips, moss_context, gemini_res.get("gemini_level")] if s)
+    print(f"[{call_id}] ✓ Core pipeline complete — level {final_level}/5, tip on dashboard (id: {tip_id})")
     return classification
