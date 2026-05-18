@@ -1,4 +1,8 @@
 -- === migration_sponge.sql ===
+-- Also add background_check_subject to tips table if not already present
+ALTER TABLE tips ADD COLUMN IF NOT EXISTS background_check_subject text;
+
+
 -- Run in Supabase SQL Editor:
 -- https://supabase.com/dashboard/project/tnyjqpxrxiihuafqaluh/sql/new
 

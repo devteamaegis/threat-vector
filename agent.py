@@ -473,6 +473,13 @@ async def run_threat_agent(
                 classification.get("key_facts") or [],
             )
             classification["background_check"] = bg_result
+            classification["background_check_subject"] = subject
+            # Merge DuckDuckGo findings into osint_findings so they appear in the modal
+            findings = bg_result.get("findings", {})
+            ddg_abstract = findings.get("abstract", "")
+            ddg_topics = "; ".join(t for t in findings.get("related_topics", []) if t)[:200]
+            if ddg_abstract or ddg_topics:
+                classification["background_check_findings"] = f"Subject: {subject}. {ddg_abstract} {ddg_topics}".strip()
             print(f"[{call_id}] Background check: {bg_result.get('findings', {}).get('abstract', 'no abstract')[:80]}")
 
             print(f"[{call_id}] Browser Use: OSINT search...")
@@ -517,15 +524,21 @@ async def run_threat_agent(
             pipeline_errors.append("moss_index")
 
         # Patch final enrichment (OSINT, archive, dispatch brief) back to Supabase
+        # Combine browser OSINT + DuckDuckGo background check findings
+        osint_combined = classification.get("osint_findings") or ""
+        bg_findings    = classification.get("background_check_findings") or ""
+        if bg_findings and bg_findings not in osint_combined:
+            osint_combined = (osint_combined + "\n\n[Background Check] " + bg_findings).strip()
+
         update_tip_enriched(tip_id, call_id, {
-            "osint_findings":           classification.get("osint_findings"),
+            "osint_findings":           osint_combined or None,
             "s3_archive_uri":           classification.get("s3_archive_uri"),
             "dispatch_brief":           classification.get("dispatch_brief"),
             "threat_window":            classification.get("threat_window"),
             "threat_window_confidence": classification.get("threat_window_confidence"),
             "cross_school_alert":       classification.get("cross_school_alert"),
             "pipeline_errors":          pipeline_errors,
-            "background_check_subject": subject if final_level >= 3 else None,
+            "background_check_subject": classification.get("background_check_subject"),
         })
 
         # Twilio SMS
