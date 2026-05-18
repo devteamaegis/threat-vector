@@ -372,6 +372,31 @@ async def sponge_wallet():
     return JSONResponse({"balance": balance, "transactions": transactions})
 
 
+@app.post("/api/demo/background-check")
+async def demo_background_check(request: Request):
+    """
+    Run a demo Sponge background check for a named subject.
+    Used by the Kairos dashboard Wallet tab to show a live transaction.
+    """
+    import asyncio
+    body = await request.json()
+    subject_name = body.get("subject", "Ishaan Samantray")
+    school = body.get("school", "YC Demo")
+    threat_level = int(body.get("threat_level", 3))
+    call_id = body.get("call_id", f"demo-{int(__import__('time').time())}")
+
+    from sponge_payments import run_paid_background_check
+    result = await asyncio.to_thread(
+        run_paid_background_check,
+        subject_name,
+        school,
+        call_id,
+        threat_level,
+        [],
+    )
+    return JSONResponse(result)
+
+
 @app.get("/health")
 async def health():
     """Show which integrations are configured."""
