@@ -192,27 +192,95 @@ def get_wallet_balance(call_id: str = "system") -> float | None:
         return None
 
 
-def get_recent_transactions(limit: int = 10) -> list:
-    """Fetch recent agent payment transactions for the dashboard ticker."""
+def get_recent_transactions(limit: int = 20) -> list:
+    """
+    Fetch recent agent payment transactions for the dashboard.
+    Priority order:
+      1. Sponge API (if wallet_id configured)
+      2. Supabase sponge_transactions table (always written to on each payment)
+      3. Hardcoded demo data (last resort when nothing is configured)
+    """
     key = os.getenv("SPONGE_API_KEY")
     wallet_id = os.getenv("SPONGE_WALLET_ID")
-    if not key or key == "FILL_IN" or not wallet_id or wallet_id == "FILL_IN":
-        # Return demo transactions for display when wallet not configured
-        return [
-            {"service": "browser-use-osint", "amount": 0.02, "label": "OSINT Search", "icon": "🔍"},
-            {"service": "twilio-sms", "amount": 0.01, "label": "SMS Alert", "icon": "📱"},
-            {"service": "agentmail-brief", "amount": 0.01, "label": "Email Brief", "icon": "✉️"},
-            {"service": "gemini-verify", "amount": 0.03, "label": "Gemini Verify", "icon": "✦"},
-            {"service": "supermemory-store", "amount": 0.005, "label": "Memory Store", "icon": "🧬"},
-        ]
-    try:
-        r = requests.get(
-            f"{SPONGE_BASE}/wallets/{wallet_id}/transactions?limit={limit}",
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=5,
-        )
-        if r.ok:
-            return r.json().get("transactions", [])
-    except Exception:
-        pass
-    return []
+
+    # 1. Try Sponge API (requires both key + wallet_id)
+    if key and key != "FILL_IN" and wallet_id and wallet_id != "FILL_IN":
+        try:
+            r = requests.get(
+                f"{SPONGE_BASE}/wallets/{wallet_id}/transactions?limit={limit}",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=5,
+            )
+            if r.ok:
+                raw = r.json().get("transactions", [])
+                if raw:
+                    return raw
+        except Exception:
+            pass
+
+    # 2. Read from Supabase sponge_transactions (written by log_transaction_to_supabase)
+    supabase_url = os.getenv("SUPABASE_URL")
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    if supabase_url and service_role_key:
+        try:
+            r = requests.get(
+                f"{supabase_url}/rest/v1/sponge_transactions"
+                f"?order=created_at.desc&limit={limit}",
+                headers={
+                    "apikey": service_role_key,
+                    "Authorization": f"Bearer {service_role_key}",
+                },
+                timeout=5,
+            )
+            if r.ok:
+                rows = r.json()
+                if rows:
+                    # Normalise column names to what the frontend expects
+                    return [
+                        {
+                            "service":    row.get("service", "unknown"),
+                            "amount":     (row.get("amount_cents") or 0) / 100,
+                            "label":      _service_label(row.get("service", "")),
+                            "icon":       _service_icon(row.get("service", "")),
+                            "call_id":    row.get("call_id"),
+                            "subject":    row.get("subject"),
+                            "tx_id":      row.get("tx_id"),
+                            "created_at": row.get("created_at"),
+                        }
+                        for row in rows
+                    ]
+        except Exception:
+            pass
+
+    # 3. Demo fallback
+    return [
+        {"service": "browser-use-osint", "amount": 0.02, "label": "OSINT Search",    "icon": "🔍"},
+        {"service": "twilio-sms",         "amount": 0.01, "label": "SMS Alert",       "icon": "📱"},
+        {"service": "agentmail-brief",    "amount": 0.01, "label": "Email Brief",     "icon": "✉️"},
+        {"service": "gemini-verify",      "amount": 0.03, "label": "Gemini Verify",   "icon": "✦"},
+        {"service": "supermemory-store",  "amount": 0.005,"label": "Memory Store",    "icon": "🧬"},
+    ]
+
+
+_SERVICE_LABELS = {
+    "background-check-agent": "Background Check",
+    "browser-use-osint":      "OSINT Search",
+    "twilio-sms":             "SMS Alert",
+    "agentmail-brief":        "Email Brief",
+    "gemini-verify":          "Gemini Verify",
+    "supermemory-store":      "Memory Store",
+}
+_SERVICE_ICONS = {
+    "background-check-agent": "🕵️",
+    "browser-use-osint":      "🔍",
+    "twilio-sms":             "📱",
+    "agentmail-brief":        "✉️",
+    "gemini-verify":          "✦",
+    "supermemory-store":      "🧬",
+}
+
+def _service_label(svc: str) -> str:
+    return _SERVICE_LABELS.get(svc, svc)
+
+def _service_icon(svc: str) -> str:
+    return _SERVICE_ICONS.get(svc, "💰")

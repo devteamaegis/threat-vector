@@ -464,12 +464,13 @@ async def run_threat_agent(
                 classification.get("subject_description", "")
                 or classification.get("school_name", "unknown subject")
             )
-            bg_result = run_paid_background_check(
-                subject_name=subject,
-                school=school,
-                call_id=call_id,
-                threat_level=final_level,
-                known_facts=classification.get("key_facts") or [],
+            bg_result = await asyncio.to_thread(
+                run_paid_background_check,
+                subject,
+                school,
+                call_id,
+                final_level,
+                classification.get("key_facts") or [],
             )
             classification["background_check"] = bg_result
             print(f"[{call_id}] Background check: {bg_result.get('findings', {}).get('abstract', 'no abstract')[:80]}")
