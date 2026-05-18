@@ -229,6 +229,41 @@ async def handle_agentphone(request: Request):
     return await handle_call(request)
 
 
+@app.post("/webhook/sms")
+async def handle_sms(request: Request):
+    """Twilio/AgentPhone SMS webhook — routes to same pipeline as voice calls."""
+    body = await request.body()
+    # Twilio sends form-encoded data
+    import urllib.parse
+    params = dict(urllib.parse.parse_qsl(body.decode()))
+    from_number = params.get("From", "unknown")
+    sms_body = params.get("Body", "")
+    # Mask phone number for privacy
+    masked = from_number[:3] + "****" + from_number[-2:] if len(from_number) > 5 else "unknown"
+
+    if not sms_body.strip():
+        return JSONResponse({"status": "empty"})
+
+    import uuid
+    call_id = f"sms-{uuid.uuid4().hex[:10]}"
+    print(f"[{call_id}] Inbound SMS from {masked}: {sms_body[:80]}")
+
+    asyncio.create_task(run_threat_agent(
+        call_id=call_id,
+        transcript=sms_body,
+        recording_url=None,
+        call_duration_seconds=max(3, len(sms_body.split()) // 2),
+        caller_location=None,
+    ))
+
+    # Twilio expects TwiML response
+    from fastapi.responses import Response
+    return Response(
+        content='<?xml version="1.0" encoding="UTF-8"?><Response><Message>Your tip has been received anonymously. Thank you for keeping your school safe.</Message></Response>',
+        media_type="application/xml"
+    )
+
+
 # Manual trigger for demo / testing without AgentPhone
 @app.post("/webhook/test")
 async def handle_test(request: Request):
