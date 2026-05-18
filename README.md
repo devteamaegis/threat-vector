@@ -209,7 +209,7 @@ three_model_consensus = (
 
 ---
 
-## Sponsor Integration — Technical Detail
+## Tools Used — Technical Detail
 
 ### AgentPhone — Voice Infrastructure + SMS
 
