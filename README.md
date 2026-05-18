@@ -2,7 +2,7 @@
 
 > **Real-time threat detection for school tip lines using a three-model AI consensus engine, Bayesian Monte Carlo scoring, and autonomous agent pipelines.**
 
-Live dashboard → **[kairos-dashboard.vercel.app](https://kairos-dashboard.vercel.app)**  
+Live dashboard → **[kairos-dashboard.vercel.app](https://threat-vector.vercel.app/)**  
 Backend API → Railway (FastAPI + Python)
 
 ---
