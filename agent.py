@@ -10,7 +10,7 @@ from memory import store_tip_memory, search_prior_tips
 from supabase import log_tip_to_aegis, update_tip_geo, update_tip_enriched
 from moss_search import semantic_search_tips, index_tip
 from stripe_billing import charge_for_tip
-from sponge_payments import disburse_agent_payment
+from sponge_payments import disburse_agent_payment, authorize_background_check, log_transaction_to_supabase
 from gemini_verify import gemini_verify
 from gemini_live import live_multilingual_analysis
 from aws_archive import archive_transcript
@@ -460,6 +460,15 @@ async def run_threat_agent(
         # OSINT (level 3+)
         osint_summary = ""
         if final_level >= 3:
+            # Sponge: authorize micro-payment for background check before OSINT lookup
+            subject = (
+                classification.get("subject_description", "")
+                or classification.get("school_name", "unknown subject")
+            )
+            bg_auth = authorize_background_check(subject, school, call_id, final_level)
+            log_transaction_to_supabase({**bg_auth, "school": school, "threat_level": final_level}, call_id)
+            print(f"[{call_id}] Sponge: authorized background check on '{subject}' — {bg_auth['amount_cents']}¢ (tx: {bg_auth['tx_id']})")
+
             print(f"[{call_id}] Browser Use: OSINT search...")
             try:
                 osint_summary = await asyncio.wait_for(

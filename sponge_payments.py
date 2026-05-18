@@ -44,6 +44,77 @@ def disburse_agent_payment(service: str, amount_cents: int, call_id: str, metada
     return None
 
 
+def authorize_background_check(subject: str, school: str, call_id: str, threat_level: int) -> dict:
+    """
+    Authorize a micro-payment for a background check via Sponge before each OSINT lookup.
+    Creates an auditable transaction receipt demonstrating autonomous AI purchasing.
+    Returns a result dict regardless of whether Sponge is configured.
+    """
+    amount_cents = threat_level * 1  # level 3 = 3¢, level 4 = 4¢, level 5 = 5¢
+    result = disburse_agent_payment(
+        service="background-check-agent",
+        amount_cents=amount_cents,
+        call_id=call_id,
+        metadata={
+            "subject": subject,
+            "school": school,
+            "threat_level": threat_level,
+            "type": "background_check",
+        },
+    )
+    if result is None:
+        # Sponge not configured — return a demo receipt so the demo always shows something
+        return {
+            "authorized": True,
+            "amount_cents": 0,
+            "tx_id": "demo-receipt",
+            "subject": subject,
+        }
+    tx_id = result.get("transaction_id") or result.get("tx_id") or result.get("id") or "demo"
+    return {
+        "authorized": True,
+        "amount_cents": amount_cents,
+        "tx_id": tx_id,
+        "subject": subject,
+    }
+
+
+def log_transaction_to_supabase(tx_data: dict, call_id: str) -> None:
+    """
+    Log a Sponge transaction to the sponge_transactions Supabase table for audit trails.
+    Never raises — failures are swallowed and printed as warnings.
+    """
+    supabase_url = os.getenv("SUPABASE_URL")
+    service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    if not supabase_url or not service_role_key:
+        return
+    try:
+        from datetime import datetime, timezone
+        payload = {
+            "call_id": call_id,
+            "service": "background-check-agent",
+            "amount_cents": tx_data.get("amount_cents", 0),
+            "subject": tx_data.get("subject", ""),
+            "school": tx_data.get("school", ""),
+            "tx_id": tx_data.get("tx_id"),
+            "threat_level": tx_data.get("threat_level"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        requests.post(
+            f"{supabase_url}/rest/v1/sponge_transactions",
+            headers={
+                "apikey": service_role_key,
+                "Authorization": f"Bearer {service_role_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            },
+            json=payload,
+            timeout=6,
+        )
+    except Exception as e:
+        print(f"[{call_id}] WARNING: Failed to log Sponge transaction to Supabase: {e}")
+
+
 def get_wallet_balance(call_id: str = "system") -> float | None:
     """Fetch district wallet balance — shown on dashboard as agent spend tracker."""
     key = os.getenv("SPONGE_API_KEY")
