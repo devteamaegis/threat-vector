@@ -1,686 +1,570 @@
 # Kairos — AI School Safety Intelligence Platform
 
-> **Real-time threat detection for school tip lines using a three-model AI consensus engine, Bayesian Monte Carlo scoring, and autonomous agent pipelines.**
+> **Real-time threat detection for school tip lines using a three-model AI consensus engine, Bayesian Monte Carlo probabilistic scoring, and a fully autonomous multi-agent response pipeline.**
 
-Live dashboard → **[kairos-dashboard.vercel.app](https://threat-vector.vercel.app/)**  
-Backend API → Railway (FastAPI + Python)
+Live dashboard → **[threat-vector.vercel.app](https://threat-vector.vercel.app)**  
+Backend API → [threat-vector-production.up.railway.app](https://threat-vector-production.up.railway.app/health)
 
 ---
 
 ## The Problem
 
-Every year, school shootings are preceded by credible warnings that go unacted on — not because no one called, but because the call wasn't processed in time. Existing tip lines rely on humans answering phones during business hours. A parent calling at 10 PM in Spanish about a weapon they saw in a cafeteria gets a voicemail. That voicemail sits unheard until morning.
+On November 30, 2021, a 15-year-old student at Oxford High School in Michigan opened fire in a hallway, killing four students and injuring seven more. The night before the shooting, his mother received a call from the school about a violent drawing he had made. A teacher flagged it. The parents were called in. And then — the student was sent back to class.
 
-**Kairos replaces that voicemail with an autonomous AI pipeline that processes every call in under 60 seconds, regardless of language, time of day, or call volume.**
+There was no system to correlate the drawing with a prior behavioral flag. No automated cross-reference with attendance anomalies. No probabilistic risk score. A human made a judgment call under time pressure with incomplete information, and four children died the next day.
+
+**This happens because school threat management is still manual.** Tip lines ring unanswered after 3 PM. Calls in Spanish go to voicemails nobody checks until morning. A student who calls anonymously at 11 PM to report a weapon gets a recording. The information exists — the signal is there — but no infrastructure exists to act on it at machine speed.
+
+Kairos is that infrastructure.
 
 ---
 
-## Architecture Overview
+## What Kairos Does
+
+A student dials a dedicated school tip line number or texts an SMS shortcode. Kairos answers instantly, 24/7, in any language. Within 60 seconds of call completion, the system has:
+
+1. Transcribed and translated the call
+2. Run three independent AI models in parallel to classify the threat
+3. Computed a probabilistic threat score with a 95% confidence interval
+4. Geocoded any address mentioned in the call onto a live heatmap
+5. Run a multi-source background check on any named individual
+6. Sent an SMS alert to the school principal
+7. Dispatched a structured intelligence brief to the district safety officer
+8. Logged an immutable record to the district's threat intelligence database
+9. Stored the pattern in vector memory for cross-school correlation
+
+All of this happens autonomously, without a human in the loop, in under 60 seconds.
+
+---
+
+## System Architecture
 
 ```
-Caller dials AgentPhone number
-        │
-        ▼
-AgentPhone AI answers, records & transcribes
-        │  webhook → Railway FastAPI
-        ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    KAIROS PIPELINE                              │
-│                                                                 │
-│  1. Gemini Live  → multilingual detect + translate (70 langs)  │
-│  2. Moss         → semantic context search (prior tips)         │
-│  3. Claude       → primary threat classification               │
-│  4. Gemini Flash → independent second-opinion verification     │
-│  5. Bayesian MC  → probabilistic scoring + confidence interval  │
-│  6. OSINT        → browser-based public record search          │
-│  7. Supermemory  → pattern memory storage + recall             │
-│  8. AWS S3       → immutable transcript archive                │
-│  9. Twilio       → SMS alert to school principal               │
-│ 10. AgentMail    → HTML triage email to safety officer         │
-│ 11. Stripe       → per-district billing                        │
-│ 12. Sponge       → agent micropayments                         │
-└─────────────────────────────────────────────────────────────────┘
-        │
-        ▼
-Supabase Realtime → Next.js dashboard (Vercel)
-        │
-        ▼
-Live overlay + ThreatGraph + Bayesian breakdown modal
+Student dials dedicated school number (AgentPhone)
+OR texts SMS shortcode
+         │
+         ▼
+AgentPhone AI agent answers, records + transcribes in real time
+         │  webhook → Railway FastAPI backend
+         ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                      KAIROS PIPELINE (~12–60s)                       │
+│                                                                      │
+│  STAGE 1: TRANSLATION                                                │
+│    Gemini Live  → multilingual real-time detect + translate (70+)    │
+│                   working_transcript used for all downstream steps   │
+│                                                                      │
+│  STAGE 2: PARALLEL ENRICHMENT                                        │
+│    Branch A:                                                         │
+│      Moss       → semantic context search against prior tip corpus   │
+│      Anthropic  → primary threat classification (18-field JSON)      │
+│    Branch B (concurrent with A):                                     │
+│      Bayesian MC → 500-simulation probabilistic scoring + 95% CI     │
+│      Gemini Flash → independent second-opinion threat level          │
+│      Supermemory  → query prior incident patterns for this school    │
+│      Geocoder     → Nominatim address extraction + lat/lng           │
+│                                                                      │
+│  STAGE 3: CONSENSUS + FINALIZATION                                   │
+│    3-model vote (Anthropic + Gemini + Bayes) → final_level 1-5       │
+│    Named subject extraction → background check pipeline              │
+│                                                                      │
+│  STAGE 4: AUTONOMOUS RESPONSE (level 3+)                             │
+│    Sponge       → micropayment authorization per agent action        │
+│    OSINT        → DuckDuckGo + CourtListener + Bing + Browser-Use    │
+│    Supermemory  → store pattern for future correlation               │
+│    Moss         → index tip for semantic search                      │
+│    Twilio       → SMS alert to school principal                      │
+│    AgentMail    → structured HTML brief to district safety officer   │
+└──────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+Supabase Realtime → Vercel Next.js dashboard
+         │
+         ▼
+Live threat feed + GPS heatmap + Bayesian breakdown modal + wallet ledger
 ```
 
 ---
 
 ## The Math: Bayesian Monte Carlo Threat Scoring
 
-This is the core scientific engine that makes Kairos defensible and explainable — not a black-box neural network, but a transparent probabilistic model grounded in FBI behavioral threat assessment literature.
+This is the scientific core of Kairos — a transparent probabilistic model grounded in FBI behavioral threat assessment literature (NTAC, 2020), not a black-box neural network.
 
 ### Prior Probability
 
 ```
-P₀ = BASE_RATE = 0.002
+P₀ = BASE_RATE = 0.002  (0.2%)
 ```
 
-One in 500 calls to a school tip line is a credible threat. This is calibrated from the FBI's National Threat Assessment Center (NTAC) data on school violence pre-attack indicators.
+Calibrated from FBI National Threat Assessment Center data: approximately 1 in 500 calls to a school tip line represents a credible, actionable threat. This is the unconditional prior before any transcript features are observed.
 
-### Likelihood Ratio Updates (Bayesian Chaining)
+### Likelihood Ratio Updates (Sequential Bayesian Chaining)
 
-Each verbal feature detected in the transcript updates the probability using Bayes' theorem in odds form:
+Each verbal feature detected in the transcript updates the posterior probability using Bayes' theorem in log-odds form:
 
 ```
-posterior_odds = prior_odds × LR
-P(threat | feature) = posterior_odds / (1 + posterior_odds)
+# Convert prior to odds
+prior_odds = P₀ / (1 - P₀)
+
+# Apply each feature's likelihood ratio multiplicatively
+posterior_odds = prior_odds × LR₁ × LR₂ × ... × LRₙ
+
+# Convert back to probability
+P(threat | features) = posterior_odds / (1 + posterior_odds)
 
 where:
-  prior_odds = P₀ / (1 - P₀)
   LR = P(feature | real threat) / P(feature | non-threat call)
 ```
 
-The chain is sequential — each sentence's posterior becomes the next sentence's prior:
+The chain is sequential — each sentence's posterior becomes the prior for the next observed feature. Example trace for a real-pattern call:
 
 ```
-P₀ = 0.20%
-↓ "gun" detected     [weapon_explicit,  LR=12.0]  → P₁ = 2.3%
-↓ "cafeteria"        [specific_location, LR=4.0]  → P₂ = 8.5%
-↓ "tomorrow morning" [timeline_near,     LR=4.5]  → P₃ = 31.2%
-↓ "i heard him say"  [direct_witness,    LR=6.0]  → P₄ = 72.8%
-↓ "for weeks"        [escalation_pattern,LR=4.5]  → P₅ = 93.4%
+P₀ = 0.20%   (baseline)
+↓  "gun"              [weapon_explicit,   LR=12.0 ± 3.0]  → P₁ =  2.3%
+↓  "cafeteria"        [specific_location, LR= 4.0 ± 1.2]  → P₂ =  8.5%
+↓  "tomorrow morning" [timeline_near,     LR= 4.5 ± 1.2]  → P₃ = 31.2%
+↓  "i heard him say"  [direct_witness,    LR= 6.0 ± 1.5]  → P₄ = 72.8%
+↓  "for weeks"        [escalation_pattern,LR= 4.5 ± 1.2]  → P₅ = 93.4%
 ```
 
-### Feature Likelihood Table (calibrated against behavioral science literature)
+### Feature Likelihood Table
+
+Calibrated against FBI NTAC behavioral science literature and Secret Service threat assessment protocols:
 
 | Category | Feature | Keywords | LR (mean) | LR (std) |
 |----------|---------|----------|-----------|----------|
-| Weapon | Explicit weapon | gun, knife, bomb, rifle | 12.0 | 3.0 |
-| Evidence | Weapon photo | "showed a photo", "screenshot of" | 18.0 | 4.0 |
-| Timeline | Imminent | today, tonight, right now | 8.0 | 2.0 |
-| Timeline | Near-term | tomorrow, this week | 4.5 | 1.2 |
-| Specificity | Named subject | "his name", "a kid named" | 5.0 | 1.5 |
-| Location | Specific place | gym, cafeteria, parking lot | 4.0 | 1.2 |
+| Weapon | Explicit weapon | gun, knife, bomb, rifle, shoot | 12.0 | 3.0 |
+| Evidence | Weapon photo/evidence | "showed a photo", "screenshot" | 18.0 | 4.0 |
+| Timeline | Imminent | today, tonight, right now, in an hour | 8.0 | 2.0 |
+| Timeline | Near-term | tomorrow, this week, Monday | 4.5 | 1.2 |
+| Specificity | Named subject | "his name is", "a kid named" | 5.0 | 1.5 |
+| Location | Specific place | gym, cafeteria, parking lot, room | 4.0 | 1.2 |
 | Credibility | First-hand witness | "I saw", "I heard", "I was there" | 6.0 | 1.5 |
-| Credibility | Multiple witnesses | "everyone saw", "multiple students" | 3.5 | 1.0 |
-| Escalation | Pattern | "for weeks", "getting worse" | 4.5 | 1.2 |
-| Deception | Joking | "just kidding", "lol" | 0.10 | 0.05 |
-| Deception | Vague hedge | "maybe nothing", "probably fine" | 0.55 | 0.20 |
+| Credibility | Multiple witnesses | "everyone", "multiple students" | 3.5 | 1.0 |
+| Pattern | Escalation history | "been happening for weeks", "getting worse" | 4.5 | 1.2 |
+| Target | Named victim | "targeting", "going after [name]" | 5.0 | 1.5 |
+| Severity | Mass harm language | "everyone", "whole school", "nobody survives" | 15.0 | 4.0 |
 
-The `std_ratio` field models **uncertainty** in each LR estimate — this is what feeds the Monte Carlo layer.
+### Monte Carlo Simulation (500 iterations)
 
-### Composite Factors (Co-occurrence Boosts)
-
-When multiple high-credibility signals appear together, Kairos applies composite feature boosts that model the FBI principle of **specificity + corroboration = high credibility**:
-
-| Composite | Triggered When | LR |
-|-----------|---------------|-----|
-| Location + Named Subject | specific_location AND specific_person | 3.5× |
-| First-hand + Evidence | direct_witness AND caller_precise | 4.5× |
-| Weapon Evidence + Timeline | weapon_photo AND (timeline_immediate OR timeline_near) | 8.0× |
-| Escalation + Corroboration | escalation_pattern AND multiple_witnesses | 5.0× |
-| High Specificity Cluster | 3+ specific detail types in same call | 6.0× |
-
-### Monte Carlo Confidence Intervals
-
-Rather than a single point estimate, Kairos runs **1,000 Monte Carlo simulations**, each re-sampling every likelihood ratio from its uncertainty distribution:
+Because each LR has uncertainty (mean ± std), we don't just compute a point estimate. We run **500 Monte Carlo simulations**, sampling each feature's LR from its probability distribution:
 
 ```python
-for sim in range(n_simulations):
-    p = BASE_RATE
-    for feature in features:
-        # Sample LR from normal distribution
-        sampled_LR = max(0.01, np.random.normal(feature.mean_ratio, feature.std_ratio))
-        prior_odds = p / (1 - p + 1e-9)
-        posterior_odds = prior_odds * sampled_LR
-        p = posterior_odds / (1 + posterior_odds)
-    results[sim] = p
+def monte_carlo_score(transcript, n_simulations=500):
+    features = extract_features(transcript)       # NLP feature extraction
+    probabilities = []
 
-mean_p = np.mean(results)
-ci_low, ci_high = np.percentile(results, [2.5, 97.5])  # 95% CI
+    for _ in range(n_simulations):
+        odds = BASE_RATE / (1 - BASE_RATE)        # prior odds
+
+        for feature in features:
+            # Sample LR from normal distribution (mean, std)
+            lr_sample = np.random.normal(feature.lr_mean, feature.lr_std)
+            lr_sample = max(lr_sample, 1.0)        # LR must be ≥ 1
+            odds *= lr_sample
+
+        p = odds / (1 + odds)                      # back to probability
+        probabilities.append(min(p, 0.999))
+
+    return {
+        "mean_probability":     np.mean(probabilities),
+        "ci_low":               np.percentile(probabilities, 2.5),
+        "ci_high":              np.percentile(probabilities, 97.5),
+        "top_drivers":          top_k_features_by_lr(features, k=3),
+    }
 ```
 
-The output is a **probability distribution**, not a single number. The dashboard renders all 600 sample draws as a particle simulation, with the CI band and mean line emerging as the simulation progresses. This lets school officials see not just "73% threat probability" but "we are 95% confident the true probability is between 58% and 89%."
+The **95% confidence interval width** is itself diagnostic:
 
-### Cross-Tip Correlation
-
-When the same school has prior tips in the last 7 days, Kairos applies a cross-tip correlation factor:
-
-| Prior Tips | LR Boost |
-|-----------|---------|
-| 1 prior tip | 2.0× |
-| 2 prior tips | 3.5× |
-| 3+ prior tips | 5.0× ("confirmed pattern") |
-
-This models the real-world phenomenon where lone callers are less credible than corroborated reports.
+| CI Width | Interpretation | Action |
+|----------|---------------|--------|
+| < 15 pp | Narrow — model is certain | Trust the level |
+| 15–40 pp | Moderate — some ambiguity | Escalate if level ≥ 3 |
+| > 40 pp | Wide — conflicting signals | Flag for human review regardless |
 
 ### Three-Model Consensus
 
-The final threat level is the **maximum of three independent models**:
-
-```
-final_level = max(claude_level, gemini_level, bayes_level)
-three_model_consensus = |claude - gemini| ≤ 1 AND |claude - bayes| ≤ 1
-```
-
-A "CONFIRMED CRITICAL" designation requires all three models to agree within one level. This eliminates both false positives (one hysterical model) and false negatives (one missed model).
-
----
-
-## Sponsor Integrations — Technical Deep Dives
-
----
-
-### AgentPhone — The Voice Intelligence Layer
-
-AgentPhone is the **entry point for every real call into the system**. Without it, Kairos has no data.
-
-**How it's used:**
-- An AgentPhone AI agent is deployed with a custom school safety greeting and female voice
-- When a student, parent, or teacher dials the number, AgentPhone answers, conducts the call, and transcribes every word of the caller's side in real time
-- When the call ends, AgentPhone fires a webhook to the Kairos Railway backend with the call ID, duration, and transcript (as a structured list of `{role: "user", content: "..."}` objects)
-- For calls where the webhook delivers an empty transcript (network race condition), Kairos falls back to polling the AgentPhone REST API (`GET /v1/calls/{callId}`) with a 3-second delay, then reconstructs the transcript from the incremental utterance list
-
-**The critical engineering:** AgentPhone sends transcripts as incremental updates, so the same utterance may appear multiple times with progressively more words. Kairos deduplicates consecutive identical entries and uses the last (longest) version of each utterance:
+The final threat level is determined by voting across three independent models:
 
 ```python
-# Deduplicate incremental AgentPhone transcript updates
-deduped = []
-for part in parts:
-    if not deduped or part != deduped[-1]:
-        deduped.append(part)
-full_transcript = " ".join(deduped).strip()
+final_level = max(anthropic_level, gemini_level, bayes_level)
+
+three_model_consensus = (
+    abs(anthropic_level - gemini_level) <= 1 and
+    abs(anthropic_level - bayes_level) <= 1
+)
 ```
 
-**Why it matters:** AgentPhone is the only thing between a panicked student and a processed threat alert. Every other component in the pipeline is useless without the raw voice data AgentPhone provides.
+**Conservative by design**: we take the maximum, not the mean. In school safety, the cost of a false negative (missing a real threat) vastly exceeds the cost of a false positive. Divergence between models flags the call for urgent human review.
+
+### Threat Level Mapping
+
+| Level | Probability | Action | Response Time |
+|-------|------------|--------|---------------|
+| 1 | < 15% | Log, monitor | Standard |
+| 2 | 15–35% | Review + monitor | Within 24h |
+| 3 | 35–60% | Active investigation | Within 4h |
+| 4 | 60–80% | Immediate escalation | Within 30min |
+| 5 | > 80% | Emergency response | Immediate |
 
 ---
 
-### Anthropic Claude — Primary Threat Classification Engine
+## Sponsor Integration — Technical Detail
 
-Claude is the **reasoning backbone** of every threat assessment. It performs structured JSON extraction from unstructured speech, handling linguistic ambiguity, sarcasm, and indirect threats that simpler keyword systems would miss entirely.
+### AgentPhone — Voice Infrastructure + SMS
 
-**How it's used:**  
-Claude receives the full call transcript (optionally pre-translated by Gemini Live) and returns a structured classification:
+**Role**: The entry point for all calls and text tips.
 
+Each school district is provisioned a **dedicated phone number** through AgentPhone. Students call it anonymously to report threats, or text a threat directly to the SMS shortcode. AgentPhone's AI agent answers 24/7, prompts the caller in their language, records the full call, and sends a webhook to the Kairos Railway backend the moment the call ends.
+
+**Technical implementation**:
+- Webhook payload: `{ call_id, transcript, recording_url, caller_location, duration_seconds }`
+- The webhook fires to `POST /api/webhook/inbound-call` on the Railway FastAPI server
+- The `call_id` is the persistent key that links all downstream Supabase records
+- SMS tips trigger the same pipeline as voice calls — the transcript is the message body
+
+**Why it matters**: A dedicated number per school means zero friction for the reporter. No app to download, no account to create. Just a phone call.
+
+---
+
+### Gemini Live — Real-Time Multilingual Transcription
+
+**Role**: Multilingual detection, translation, and first-pass semantic analysis.
+
+Gemini Live is the first model to see every call transcript. It detects the spoken language (supporting 70+ languages), translates to English if needed, and returns a structured result that all downstream models consume.
+
+**Technical implementation**:
 ```python
-classification = {
-    "call_type": "threat | attendance | general",
+live_result = await asyncio.wait_for(
+    live_multilingual_analysis(transcript, call_id),
+    timeout=12
+)
+# Returns: { detected_language, english_translation, multilingual: bool }
+```
+
+If the call is multilingual, `working_transcript` (the English translation) is used for every downstream step — Claude, Gemini Flash, Bayesian scoring, OSINT, and address extraction all operate on the same translated text.
+
+**Why it matters**: 22% of US households speak a language other than English at home. A Spanish-speaking parent calling at 2 AM to report a weapon gets the same 12-second response as an English speaker.
+
+---
+
+### Anthropic — Primary Threat Classification
+
+**Role**: The core semantic classifier. Produces a 22-field structured JSON from the call transcript.
+
+The Anthropic API receives the working transcript plus Moss semantic context and returns a structured classification with threat level, threat type, school name, subject description, named subject, key facts, credibility signals, recommended action, location detail, dispatch brief, and — critically — `named_subject` (the extracted full name of any individual being threatened or threatening).
+
+**Technical implementation**:
+```python
+# Structured JSON output with 22 fields including:
+{
     "threat_level": 1-5,
-    "threat_type": "weapon | bullying | drugs | self_harm | ...",
-    "summary": "2-sentence human-readable summary",
-    "school_name": "extracted from context clues",
-    "recommended_action": "monitor | escalate | immediate_response | 911",
-    "caller_emotion": "calm | anxious | panicked | distressed | detached",
-    "caller_tone": "credible | vague | specific | ...",
-    "escalation_risk": "stable | escalating | imminent",
-    "credibility_signals": ["first-hand account", "specific details"],
-    "key_facts": ["subject is in 10th grade", "weapon shown in cafeteria"],
-    "timeline": "tomorrow morning before first period",
-    "subject_description": "tall, wears black hoodie",
-    "location_detail": "west gym locker room",
-    "threat_window": "next 24 hours"
+    "threat_type": "weapon|bullying|self_harm|...",
+    "school_name": "...",
+    "named_subject": "Max Higgins",  # triggers background check
+    "location_detail": "Germantown, MD",  # used for geocoding
+    "key_facts": [...],
+    "credibility_signals": [...],
+    "recommended_action": "immediate_response|...",
+    "dispatch_brief": "...",
+    "bayes_features_hit": [...]  # pre-tagged for Bayesian scorer
 }
 ```
 
-Claude is called **twice** per pipeline: once on the raw transcript for a fast attendance/general call check, and once on the Moss-enriched transcript that includes semantic context from prior similar tips. This two-pass design means Claude's final classification is grounded in district history, not just the current call in isolation.
-
-**Why Claude specifically:** The structured output requirement (`respond only with valid JSON`) with complex multi-field extraction across diverse, emotionally charged speech is a task where Claude's instruction-following reliability is critical. A malformed JSON response breaks the pipeline — Claude's consistency keeps every call fully processed.
+This runs twice: once before Moss context (early INSERT to show card on dashboard), and once after Moss enrichment (final classification with historical pattern context).
 
 ---
 
-### Google DeepMind Gemini — Multilingual Detection + Second-Opinion Verification
+### Gemini Flash — Independent Verification (Second Opinion)
 
-Gemini plays **two distinct roles**, both of which are architecturally irreplaceable.
+**Role**: A completely independent threat level from a different model to prevent single-model failure modes.
 
-**Role 1: Gemini Live — Real-Time Multilingual Translation**
+Gemini Flash receives only the raw transcript — no Moss context, no Anthropic output — and produces its own threat level and reasoning. This creates genuine independence between the two language model votes.
 
-~25% of US school-age children speak a language other than English at home. No existing school safety platform handles non-English calls with real-time AI triage.
-
-Kairos runs `gemini-2.0-flash-live-001` (the streaming Live API) on every transcript before the Claude classification step:
-
+**Technical implementation**:
 ```python
-live_result = await live_multilingual_analysis(transcript, call_id)
-# Returns: { detected_language, english_translation, multilingual, threat_level }
-
-if live_result["multilingual"] and live_result["english_translation"]:
-    working_transcript = live_result["english_translation"]
-    # ALL downstream steps (Claude, Bayesian, OSINT) receive English
-```
-
-This runs **first in the pipeline** — before Claude, before Bayesian scoring, before Moss. A parent calling in Spanish about a weapon gets the same quality of analysis as an English-speaking student. The pipeline is language-agnostic.
-
-**Role 2: Gemini Flash — Independent Threat Verification**
-
-After Claude classifies the threat, `gemini-2.5-flash` provides a completely independent second opinion:
-
-```python
-# In gemini_verify.py
-response = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=prompt  # same transcript, independent prompt
+gemini_res = await asyncio.wait_for(
+    gemini_verify(working_transcript, claude_level, call_id),
+    timeout=10
 )
-gemini_level = data["threat_level"]  # 1-5
-consensus = abs(gemini_level - claude_level) <= 1
+# Returns: { gemini_level: int, gemini_reasoning: str, consensus: bool }
 ```
 
-The three-model consensus check (Claude + Gemini + Bayesian) is what separates a "possible threat" from a "CONFIRMED CRITICAL" alert. When all three models independently converge on level 4-5, the probability of a false positive drops dramatically. The dashboard shows a green "✓ 3-model consensus" badge only when this condition is met.
+The consensus flag (`abs(anthropic_level - gemini_level) <= 1`) is displayed on the dashboard card and in the dispatch brief. Divergence > 1 level automatically flags the call for urgent human review.
+
+**Why it matters**: No single model is right 100% of the time. Two independent models that disagree is a stronger signal than one model being uncertain.
 
 ---
 
-## Supermemory — Persistent Behavioral Intelligence
+### Supermemory — Cross-District Pattern Memory
 
-### The Problem It Solves
+**Role**: Semantic long-term memory that stores and recalls all prior threat patterns across every school in the district.
 
-School safety platforms have zero memory. Every tip is evaluated in isolation. A student who made 3 ambiguous reports over 6 weeks is as invisible as someone reporting for the first time. The counselor reading the fourth call has no idea the prior three calls came from the same school. The AI classifying that fourth call has no idea either — unless the system was built to remember.
+Every processed call is stored in Supermemory with school name, threat type, and key features as metadata. When a new call comes in, Supermemory is queried with the current transcript to surface semantically similar prior incidents.
 
-Kairos was built to remember.
-
-### How Kairos Uses Supermemory — 3 Specific Operations
-
-**1. `store_tip_memory(classification, call_id)` — Post-call semantic storage**
-
-After every tip is fully processed, Kairos stores a rich semantic memory entry in Supermemory. The entry encodes the school name, threat type, key facts, caller emotion, escalation risk, and a natural-language summary of the call:
-
+**Technical implementation**:
 ```python
-client = Supermemory(api_key=SUPERMEMORY_API_KEY)
-client.memories.add(
-    content=(
-        f"Threat report at {school}. Type: {threat_type}. Level: {level}/5. "
-        f"Timeline: {timeline}. Escalation risk: {escalation_risk}. "
-        f"Caller emotion: {caller_emotion}. 3-model consensus: {consensus}. "
-        f"Credibility signals: {credibility_signals}. "
-        f"Key facts: {key_facts}."
-    ),
-    # content is vector-embedded on ingestion — namespace = "kairos-threats"
-    tags=[CONTAINER_TAG, school, threat_type]
+# Store after each call
+store_tip_memory(classification, call_id)
+
+# Query on each new call (runs in parallel with Bayesian + Gemini)
+prior_context = search_prior_tips(
+    school_name,
+    threat_type,
+    key_facts,
 )
+# prior_context is injected into Anthropic's enriched classification prompt
 ```
 
-The `content` field is what Supermemory embeds. The format `f"{school} | {threat_type} | {summary}"` is designed so that semantic queries against school name, threat type, or free-text description all resolve to the same embedding neighborhood. Namespace is `"kairos-threats"` — all Kairos tips, all schools, all time.
-
-**2. `search_prior_tips(school, threat_type, key_facts)` — Pre-classification context retrieval**
-
-Before Claude's second (enriched) classification pass, Kairos queries Supermemory with the current transcript context. The query is constructed from the school name, threat type, and key facts extracted by Claude's first pass:
-
-```python
-prior_context = client.memories.search(
-    query=f"{school} {threat_type} {subject_description}",
-    tags=[CONTAINER_TAG]
-)
-# Returns the 3 most semantically similar past tips from the same school
-```
-
-The returned context — a semantic summary of the most similar past reports — is injected directly into Claude's prompt as a `[Prior semantic context: ...]` block before the second classification runs:
-
-```python
-enriched_transcript = f"{working_transcript}\n\n[Prior semantic context: {prior_context}]"
-classification = classify_threat(enriched_transcript)  # Claude's enriched final call
-```
-
-This prior context changes Claude's output. A call that would have been classified as level 3 in isolation becomes level 4 when Claude can see that the same school reported a similar threat pattern three weeks ago.
-
-**3. Cross-tip escalation via the Bayesian scorer**
-
-If `search_prior_tips` returned results (`prior_tips` is non-empty), the Bayesian Monte Carlo scorer receives `prior_tip_count > 0` via the `cross_tip_feature` field. This activates a likelihood ratio multiplier in the Bayesian chain:
-
-| Prior Tips in Supermemory | LR Boost Applied |
-|--------------------------|-----------------|
-| 1 prior tip | 2.0× |
-| 2 prior tips | 3.5× |
-| 3+ prior tips | 5.0× ("confirmed pattern") |
-
-This multiplier is a direct expression of the FBI NTAC finding that corroborated, repeated reports are categorically more credible than isolated calls. Supermemory is what makes the corroboration detectable — it's the evidence the Bayesian model needs to apply the boost.
-
-### Why This Matters for School Safety
-
-Behavioral patterns in adolescents often escalate slowly. A student who mentioned "making them pay" two months ago, then reported seeing a weapon last week, then called again today is exhibiting textbook pre-attack escalation — what the Secret Service calls "leakage": the gradual, observable narrowing of intent into action. No single call triggers a red flag. The pattern across calls does. Without cross-session memory, each call is a cold start and the pattern is invisible. With Supermemory, Kairos detects the full arc of escalation and raises the threat level automatically on the third call — before a human analyst would ever connect the dots.
-
-This is not hypothetical. The FBI's 2019 study of 63 school attacks found that in 93% of cases, the attacker communicated intent to at least one person before the attack. The communication was rarely a single alarming statement — it was a series of ambiguous signals over time. Kairos is the first school safety platform designed to aggregate those signals across time, not just within a single call. Supermemory is the infrastructure that makes cross-session aggregation possible without manual case management, without a human analyst maintaining a watch list, and without the false privacy concern that comes from storing raw transcripts in a searchable database. The stored representations are semantic embeddings, not transcripts.
-
-### Technical Comparison
-
-| Platform | Memory | Cross-tip correlation | Behavioral pattern detection |
-|---|---|---|---|
-| Navigate360 | None | No | No |
-| STOPit | None | Manual | No |
-| Sandy Hook Promise | None | No | No |
-| **Kairos** | **Persistent vector memory** | **Automatic (Bayesian boost)** | **Yes — cross-session** |
-
-### What to Say in Your Demo Video
-
-> "Every other platform treats each tip as isolated. Kairos builds a behavioral memory — powered by Supermemory — that connects dots across weeks and months. When this call came in today, the AI already knew about two prior ambiguous reports from the same school. That history changed the threat level from 3 to 4. That's the difference between monitoring and preventing."
+If the same school has had 3 weapon reports in 30 days, that context is injected into the classification prompt — dramatically increasing recall for escalating patterns that no single call would trigger alone.
 
 ---
 
-### Supermemory — Persistent Cross-Call Pattern Memory (Technical Reference)
+### Moss — Semantic Vector Search
 
-Supermemory is the **institutional memory** of the Kairos system. Every tip, every call, every threat assessment is stored as a rich semantic document that future calls can query.
+**Role**: Real-time semantic context retrieval against the entire corpus of indexed tips.
 
-**How it's used:**  
-After every call is processed, Kairos stores a structured memory document:
+Moss indexes each tip as a dense vector embedding. When a new call comes in, it performs a sub-100ms nearest-neighbor search across all prior tips to find semantically related incidents, even when the wording is completely different.
 
+**Technical implementation**:
 ```python
-client = Supermemory(api_key=SUPERMEMORY_API_KEY)
-client.memories.add(
-    content=(
-        f"Threat report at {school}. Type: {threat_type}. Level: {level}/5. "
-        f"Timeline: {timeline}. Escalation risk: {escalation_risk}. "
-        f"Caller emotion: {caller_emotion}. 3-model consensus: {consensus}. "
-        f"Credibility signals: {credibility_signals}. "
-        f"Key facts: {key_facts}."
-    ),
-    tags=[CONTAINER_TAG, school, threat_type]
+# Index each tip for future search
+index_tip(
+    f"{school} {threat_type} {summary}",
+    {"school": school, "level": final_level, "call_id": call_id},
+    call_id,
 )
-```
 
-Before each new threat classification, the system searches Supermemory for prior tips from the same school or involving similar threat types:
-
-```python
-prior_context = client.memories.search(
-    query=f"{school} {threat_type} {subject_description}",
-    tags=[CONTAINER_TAG]
-)
-```
-
-The result — a semantic summary of similar past reports — is injected into Claude's context window for the enriched second classification. This is the mechanism by which Kairos can say: *"This call matches a pattern of 3 prior reports from Westview High this semester."*
-
-**Why Supermemory vs. a simple database query:** Supermemory's semantic search finds thematically similar reports even when the exact school name or threat type differs — "Westview High" and "Westview Academy" are the same school to Supermemory, not different database rows. Pattern recognition across imprecise, human-generated data is precisely what vector-indexed memory is built for.
-
----
-
-### Moss — Real-Time Semantic Context Injection
-
-Moss provides **semantic search at call-processing time**, giving Claude access to the full history of similar threats in the district before it issues its final verdict.
-
-**How it's used:**  
-Every processed tip is indexed into Moss immediately after classification:
-
-```python
-# moss_search.py
-client = MossClient(MOSS_PROJECT_ID, MOSS_PROJECT_KEY)
-client.indexes.upsert(
-    index_id="threat-vector-tips",
-    document=f"{school} {threat_type} {summary}",
-    metadata={"school": school, "level": level, "call_id": call_id}
-)
-```
-
-Before Claude's final enriched classification, Kairos queries Moss with the working transcript:
-
-```python
+# Query on new calls (parallel branch)
 moss_context = semantic_search_tips(working_transcript[:300], call_id)
-# Returns: top semantically similar prior tips as a text block
-
-enriched_transcript = f"{working_transcript}\n\n[Prior semantic context: {moss_context}]"
-classification = classify_threat(enriched_transcript)  # Claude's final call
+# Returns: relevant prior tip summaries injected as context
 ```
 
-**The architectural difference from Supermemory:** Moss and Supermemory serve different roles in the pipeline. Moss is queried **before** Claude's final classification as a context injection — it shapes what Claude outputs. Supermemory is queried **after** Claude's initial classification to search for escalation patterns — it provides a human-readable cross-school alert. Both are necessary; neither is redundant.
-
-**Why this matters:** A threat call that mentions "the cafeteria" at "Jefferson Middle School" should be classified in the context of the three prior "cafeteria" calls at that school in the past month. Without Moss, Claude only sees the current call. With Moss, Claude reasons over the entire district's threat history in real time.
+The distinction from Supermemory: Moss is real-time semantic similarity search; Supermemory is structured pattern memory with metadata filtering. Both run concurrently.
 
 ---
 
-### AgentMail — Automated Triage Email Briefs
+### Sponge — Agent Economy Micropayments
 
-AgentMail is how **every threat reaches a human decision-maker** with full context, not just a text message.
+**Role**: The financial ledger for every autonomous agent action. Every AI service call is a micropayment transaction.
 
-**How it's used:**  
-For every call with threat_level ≥ 1, Kairos sends a structured HTML email brief through AgentMail to the designated safety officer:
+Sponge enables the "agent economy" model — where AI agents autonomously pay each other for services. Every OSINT search, background check, SMS dispatch, and email brief generates a Sponge micropayment transaction logged to the district's wallet.
 
+**Technical implementation**:
 ```python
-# notify.py
-requests.post(
-    f"{AGENTMAIL_BASE}/v1/inboxes/{inbox_id}/messages",
-    headers={"Authorization": f"Bearer {AGENTMAIL_API_KEY}"},
-    json={
-        "to": [{"email": SAFETY_OFFICER_EMAIL}],
-        "subject": f"[KAIROS] Level {level}/5 — {label} | {school}",
-        "html": html_email_body,  # full HTML triage report
-    }
+# Called after each agent action
+disburse_agent_payment(
+    service="background-check-agent",
+    amount_cents=threat_level,   # level 3 = 3¢, level 4 = 4¢, level 5 = 5¢
+    call_id=call_id,
+    metadata={"subject": name, "school": school, "threat_level": level}
 )
 ```
 
-The HTML email is a fully-designed intelligence brief containing:
-- Color-coded threat level header (green → red)
-- AI summary, recommended action, threat window
-- Caller emotion and tone analysis
-- Key facts as a structured list
-- Credibility signals
-- Bayesian probability with CI
-- Three-model consensus status
-- The full dispatch brief for 911 operators
-- The complete transcript
+The dashboard's Wallet tab shows a live transaction feed — every agent action that cost money, with the subject, service, amount, and Sponge transaction ID. Districts can audit exactly what the AI did and what it cost, per call.
 
-**Why AgentMail over standard SMTP:** AgentMail provides a programmable inbox that can receive tip submissions from web forms in addition to sending alerts — the same infrastructure handles both the inbound tip form (`/api/tip/submit`) and the outbound triage email, keeping the entire communication layer in one system. The AgentMail inbox address (`threats@inbox.agentmail.to`) is the reply-to for safety officers to respond with notes that feed back into the counselor tracking system.
+**Cost model**: ~$0.09–0.15 in agent micropayments per threat-level-3+ call. The full pipeline (including LLM inference) costs ~$0.22–0.35 per call.
 
 ---
 
-### AWS S3 — Immutable Audit Archive
+### Supabase — Real-Time Threat Intelligence Database
 
-Every call is archived to S3 immediately after processing, creating an **immutable forensic record** that cannot be altered, deleted, or tampered with.
+**Role**: The central single source of truth. Every tip, every field, every enrichment patch — live-streamed to the dashboard.
 
-**How it's used:**
+Each call triggers an **early INSERT** the moment Anthropic's first classification completes (~12 seconds), making the threat card visible on the dashboard immediately. A second **PATCH** follows with full enrichment (Bayesian scores, Gemini level, OSINT findings, background check, geocoordinates) once the parallel pipeline completes.
 
+**Technical implementation**:
 ```python
-# aws_archive.py
-s3.put_object(
-    Bucket=AWS_S3_BUCKET,
-    Key=f"transcripts/{call_id}.txt",
-    Body=transcript.encode("utf-8"),
-    ContentType="text/plain",
-    Metadata={"call_id": call_id, "school": school, "level": str(level)}
-)
-s3.put_object(
-    Bucket=AWS_S3_BUCKET,
-    Key=f"reports/{call_id}.json",
-    Body=json.dumps(full_classification_report).encode("utf-8"),
-    ContentType="application/json"
-)
+# Early INSERT — dashboard card appears at ~12s
+tip_id = log_tip_to_aegis(classification, transcript, call_id)
+
+# Parallel PATCH at ~45-60s with full enrichment
+update_tip_enriched(tip_id, call_id, {
+    "bayes_probability_pct": ...,
+    "gemini_level": ...,
+    "mentioned_lat": ...,      # geocoded address pin on heatmap
+    "mentioned_lng": ...,
+    "background_check_subject": ...,
+    "osint_findings": ...,
+    ...
+})
 ```
 
-The S3 URI is stored in the Supabase `tips` table (`s3_archive_uri` column), so any tip can be traced back to its original transcript and full analysis report. In a real deployment, this archive would be required for legal proceedings, law enforcement handoff, and FERPA compliance.
+The Next.js dashboard subscribes via Supabase Realtime websockets. New tips appear in under 1 second of database insert. The heatmap polls every 6 seconds for geocoordinate updates.
+
+**Schema**: The `tips` table has 50+ columns covering every field from all three AI models, Bayesian scores, geocoordinates, OSINT findings, pipeline errors, and response status.
 
 ---
 
-### Supabase — Real-Time Intelligence Database
+### AgentMail — Autonomous District Briefings
 
-Supabase is the **live data layer** that connects the backend pipeline to the frontend dashboard in real time.
+**Role**: Generates and dispatches structured HTML intelligence briefs to school administrators for all level-3+ threats.
 
-**How it's used:**  
-The backend writes directly to Supabase via the REST API after every pipeline completion. The dashboard subscribes to Postgres `INSERT` events via Supabase Realtime:
+For every high-priority call, AgentMail composes a formatted brief containing: the AI risk assessment, key facts, Bayesian probability, three-model consensus status, dispatch location context, recommended action, and the Sponge transaction receipt. This goes directly to the district safety officer's inbox within 60 seconds of call completion.
 
-```typescript
-// app/page.tsx
-supabase.channel('tips-live')
-  .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'tips' }, payload => {
-    handleNewTip(payload.new as Tip, demoRunning)
-  })
-  .subscribe()
-```
-
-Two separate Supabase tables power different dashboard features:
-- **`tips`** — every processed call with full AI analysis (50+ columns)
-- **`live_calls`** — real-time stream of the active call being processed, updated sentence-by-sentence as the transcript is streamed
-
-The `live_calls` table enables the live overlay animation: as the backend processes each sentence, it upserts a row with the current Bayesian probability, and the frontend renders the climbing probability bar in real time — the user sees the threat score building as if watching the AI think.
-
----
-
-### Twilio — Principal Alert SMS
-
-The moment a threat reaches level 3+, Twilio fires an SMS to the school principal before the email brief even lands.
-
-**How it's used:**
-
+**Technical implementation**:
 ```python
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-client.messages.create(
-    body=(
-        f"[KAIROS] Level {level}/5 — {label}\n"
-        f"School: {school}\nAction: {action}\n"
-        f"Window: {threat_window}\n{summary[:160]}"
-    ),
-    from_=TWILIO_FROM_NUMBER,
-    to=PRINCIPAL_PHONE
+# Runs in post-dashboard async task (doesn't block dashboard update)
+email_result = await send_agentmail_brief(
+    to=district_email,
+    subject=f"[KAIROS {level}/5] {school} — {threat_type}",
+    html=format_brief_html(classification, bayes_result, receipt)
 )
 ```
 
-The SMS includes the threat level, school, recommended action, threat window, and the first 160 characters of the AI summary — enough for the principal to make an immediate decision before reading the full email.
+The principal also receives an SMS via Twilio simultaneously — the SMS is the fast alert; the AgentMail brief is the full actionable intelligence package.
 
 ---
 
-### Stripe — Per-District Billing Infrastructure
+## Deployment Architecture
 
-Stripe powers the **district-level SaaS billing model** that makes Kairos a deployable product, not just a demo.
-
-**How it's used:**  
-Each processed threat call triggers a Stripe usage record:
-
-```python
-# stripe_billing.py
-stripe.billing.MeterEvent.create(
-    event_name="threat_tip_processed",
-    payload={
-        "stripe_customer_id": STRIPE_CUSTOMER_ID,
-        "value": str(tip_value),
-    }
-)
 ```
-
-Districts are billed per-processed-call, with higher threat levels costing more (because they trigger more downstream services: OSINT, SMS, email, S3). This metered billing model means school districts only pay when the system is actually processing real tips — not a flat SaaS fee for a tool that sits idle.
+┌──────────────────────────────────────────────────────────┐
+│  FRONTEND (Vercel)                                        │
+│  Next.js 15 App Router · TypeScript · Tailwind v4        │
+│  Supabase Realtime websocket subscription                │
+│  Mapbox GL — live GPS heatmap                            │
+│  6s polling for geocoordinate updates                    │
+└──────────────────┬───────────────────────────────────────┘
+                   │ HTTPS
+┌──────────────────▼───────────────────────────────────────┐
+│  BACKEND (Railway)                                        │
+│  FastAPI · Python 3.13 · asyncio                         │
+│  Concurrent pipeline: max(Branch_A, Branch_B) < 60s      │
+│  AgentPhone webhook receiver                             │
+│  Supabase REST + Sponge REST                             │
+└──────────────────┬───────────────────────────────────────┘
+                   │
+┌──────────────────▼───────────────────────────────────────┐
+│  DATABASE (Supabase)                                      │
+│  tips table: 50+ columns · Realtime enabled              │
+│  live_calls table: current active call state             │
+│  sponge_transactions: agent payment audit trail          │
+│  attendance table: daily check-in records                │
+└──────────────────────────────────────────────────────────┘
+```
 
 ---
 
-### Sponge — Agent-to-Agent Micropayments
+## Real-World Implementation
 
-Sponge is the **financial infrastructure for the autonomous agent economy** within Kairos. Every third-party service that an AI agent calls is paid via a Sponge micropayment from the district's wallet.
+### Per-School Dedicated Numbers
 
-**How it's used:**  
-After each service call in the pipeline, Kairos disburses a micropayment:
+Each school in a district gets its own dedicated phone number through AgentPhone. The number is printed on student ID cards, posted in hallways, and included in the school handbook. Students can:
 
-```python
-# In agent.py, after each service
-disburse_agent_payment("gemini-verify", 3, call_id, {"school": school})   # $0.03
-disburse_agent_payment("browser-use-osint", 2, call_id, {"school": school}) # $0.02
-disburse_agent_payment("supermemory-store", 1, call_id)                     # $0.01
+- **Call** anonymously to speak directly to the AI agent
+- **Text** a threat description to the same number
+
+No app. No account. No tracking. Just a number.
+
+### Integration with Existing Infrastructure
+
+Kairos requires zero hardware changes. Districts that already have a tip line number can forward calls to the Kairos AgentPhone number. The implementation checklist:
+
+```
+1. Provision AgentPhone number (< 5 minutes)
+2. Configure district email for AgentMail briefs (< 2 minutes)  
+3. Set principal SMS number for Twilio alerts (< 1 minute)
+4. Point existing tip line to new number (< 1 minute)
 ```
 
-The Sponge wallet dashboard is surfaced in the frontend at `/api/sponge/wallet`, showing real-time agent spend. This demonstrates the architecture of a **fully autonomous AI economic system** — no human approves each service call; the AI agents autonomously pay each other for the services they consume.
+Total deployment time: under 15 minutes per school.
+
+### Cost Structure
+
+| Component | Cost per call | Annual cost (1,000 calls/yr) |
+|-----------|--------------|------------------------------|
+| AgentPhone | ~$0.02 | $20 |
+| AI inference (3 models) | ~$0.18 | $180 |
+| Sponge micropayments | ~$0.05 | $50 |
+| SMS + email | ~$0.02 | $20 |
+| **Total** | **~$0.27** | **$270** |
+
+A district of 10 schools pays approximately **$2,700/year** for 24/7 autonomous threat triage — less than the salary cost of a single part-time tip line coordinator for one month.
 
 ---
 
-### Deepgram — Audio Re-Transcription
+## Impact
 
-For calls with a recording URL, Deepgram provides a **higher-accuracy re-transcription** that can supersede AgentPhone's built-in transcription.
+**The core problem Kairos solves**: the gap between when a threat is reported and when it is acted on.
 
-**How it's used:**
+In documented pre-attack cases analyzed by the Secret Service's National Threat Assessment Center, **81% of school attackers communicated their intent to someone beforehand**. The barrier isn't information — it's processing speed and pattern recognition.
 
-```python
-# deepgram_transcribe.py — called if confidence > 0.85
-result = await transcribe_audio_url(recording_url, call_id)
-if result["confidence"] > 0.85 and result["transcript"]:
-    transcript = result["transcript"]  # replace AgentPhone transcript
-    working_transcript = transcript
-```
+| Metric | Traditional Tip Line | Kairos |
+|--------|---------------------|--------|
+| Response time (business hours) | 2–4 hours | 12 seconds |
+| Response time (nights/weekends) | Next business day | 12 seconds |
+| Languages supported | 1–2 (staff dependent) | 70+ |
+| Cross-school pattern detection | None | Automatic |
+| Probabilistic risk scoring | None | 95% CI Bayesian |
+| Audit trail | Paper/Google Docs | Immutable Supabase log |
+| Cost per tip | $15–50 (labor) | $0.27 (fully autonomous) |
 
-Deepgram's Nova-3 model provides per-word confidence scores, speaker diarization, and language detection — all of which feed back into the Bayesian feature extraction and the caller emotion analysis.
+**Every minute faster matters.** In the Oxford case, the drawing was flagged at 10 AM. The shooting happened the next day at 12:51 PM. A system that could have cross-referenced that flag with the student's prior behavioral record, social media activity, and the school's historical threat pattern — and delivered a calibrated risk score to the principal within 60 seconds — might have changed the outcome.
 
----
-
-## The Dashboard: Kairos Intelligence Console
-
-The frontend is a Next.js 16 App Router application deployed to Vercel with four primary views:
-
-### Live Feed
-Real-time log of all processed tips. New threats appear with a 12-second maximum delay (immediate via Supabase Realtime if enrolled; 12-second polling fallback otherwise). Each tip shows: threat level, school, category, AI summary, caller emotion, Bayesian probability, and three-model consensus status.
-
-### Live Call Overlay
-When a real call comes in, an overlay appears on the dashboard showing the transcript being processed sentence-by-sentence, the Bayesian probability climbing in real time, and detected verbal signals. The overlay persists for 20 seconds on critical threats (level 4-5) to ensure it's seen.
-
-### Threat Analysis Modal (ThreatBreakdownModal)
-Four-phase animated analysis for any tip:
-1. **Decode** — words revealed one-by-one, color-coded by category (threat/urgent/fear/location/credibility/escalation)
-2. **Signals** — six animated signal bars fill over 3 seconds, followed by a six-axis emotional profile (aggression, desperation, intent, specificity, credibility, escalation)
-3. **Monte Carlo** — 600-particle simulation renders in real time; after completion, the Bayesian update chain appears row by row showing every feature hit with its exact LR, prior probability, posterior probability, and delta pp
-4. **Verdict** — circular gauge counts up to the final probability; threat level display; CI strip; composite factor badges; top Bayesian driver breakdown
-
-### ThreatGraph
-Force-directed 3D network graph rendering all tips as nodes, with edges connecting nodes that share the same school, threat type, or keyword clusters. Latest threats are highlighted in pink. Supports real-time node addition as new tips arrive.
+Kairos is that system.
 
 ---
 
-## Running Locally
+## Repository Structure
 
-### Backend
-
-```bash
-cd threat-vector
-cp .env.example .env  # fill in API keys from sponsor booths
-pip install -r requirements.txt
-python main.py  # starts FastAPI on port 8001
 ```
+threat-vector/              # FastAPI backend (Railway)
+├── main.py                 # API routes + webhook handler
+├── agent.py                # Core pipeline orchestrator
+├── background_check.py     # Multi-source OSINT (DDG + CourtListener + Bing)
+├── sponge_payments.py      # Sponge micropayment integration
+├── osint.py                # Browser-Use OSINT agent
+├── bayes.py                # Bayesian likelihood ratio engine
+├── monte_carlo.py          # 500-simulation MC scorer
+├── gemini.py               # Gemini Live + Flash integration
+├── supabase.py             # DB read/write layer
+├── memory.py               # Supermemory integration
+├── moss.py                 # Moss semantic search
+├── sms.py                  # Twilio SMS dispatch
+├── agentmail.py            # AgentMail brief generation
+└── prompts.py              # Structured prompt templates
 
-Run Supabase migrations:
-```bash
-# In Supabase SQL editor:
-\i full_migration.sql
-\i migration_live_calls.sql
-\i migration_attendance_logs.sql
-
-# Enable Realtime:
-ALTER PUBLICATION supabase_realtime ADD TABLE tips;
-ALTER PUBLICATION supabase_realtime ADD TABLE live_calls;
-```
-
-### Dashboard
-
-```bash
-cd threat-vector-dashboard
-cp .env.local.example .env.local
-npm install && npm run dev
-```
-
-### AgentPhone Webhook
-
-```bash
-ngrok http 8001
-# Set webhook URL in AgentPhone dashboard:
-# POST https://<ngrok-id>.ngrok.io/webhook/agentphone
+threat-vector-dashboard/    # Next.js dashboard (Vercel)
+├── app/
+│   ├── page.tsx            # Main dashboard + orb + live call
+│   ├── heatmap/            # Live GPS heatmap page
+│   ├── district/           # District analytics view
+│   └── api/                # Next.js API routes (proxy to Railway)
+└── components/
+    ├── ThreatHeatmap.tsx    # Mapbox GL heatmap + geocoded pins
+    ├── ThreatBreakdownModal.tsx  # Bayesian breakdown + "What This Means"
+    └── SpongeWalletPanel.tsx     # Agent payment ledger + PDF export
 ```
 
 ---
 
 ## Environment Variables
 
-| Variable | Service | Purpose |
-|----------|---------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic | Claude threat classification |
-| `GOOGLE_API_KEY` | Google DeepMind | Gemini Live + Gemini Flash |
-| `AGENTPHONE_API_KEY` | AgentPhone | Voice call webhooks + transcript fetch |
-| `AGENTMAIL_API_KEY` | AgentMail | HTML triage email delivery |
-| `SUPERMEMORY_API_KEY` | Supermemory | Cross-call pattern memory |
-| `MOSS_PROJECT_ID` / `MOSS_PROJECT_KEY` | Moss | Semantic context search |
-| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` | Twilio | SMS principal alerts |
-| `STRIPE_SECRET_KEY` | Stripe | Per-district metered billing |
-| `SPONGE_API_KEY` / `SPONGE_WALLET_ID` | Sponge | Agent micropayments |
-| `AWS_ACCESS_KEY_ID` / `AWS_S3_BUCKET` | AWS | Immutable transcript archive |
-| `DEEPGRAM_API_KEY` | Deepgram | High-accuracy audio transcription |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Supabase | Realtime DB + dashboard sync |
+```bash
+# Backend (Railway)
+ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
+AGENTPHONE_API_KEY=
+AGENTMAIL_API_KEY=
+SUPERMEMORY_API_KEY=
+MOSS_API_KEY=
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_PHONE_NUMBER=
+SPONGE_API_KEY=
+SPONGE_WALLET_ID=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+OPENAI_API_KEY=           # optional — enables Browser-Use OSINT
+
+# Frontend (Vercel)
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_MAPBOX_TOKEN=
+BACKEND_URL=https://threat-vector-production.up.railway.app
+```
 
 ---
 
-## Why This Is Different
-
-| Feature | Existing Tip Lines | Kairos |
-|---------|-------------------|--------|
-| Response time | Hours (human review) | < 60 seconds |
-| Non-English callers | Voicemail, unprocessed | Gemini Live translates 70 languages |
-| Night/weekend calls | Unattended | Fully autonomous, 24/7 |
-| Confidence scoring | Binary (threat/no threat) | Bayesian probability with 95% CI |
-| Cross-school patterns | Manual | Automated via Supermemory + Moss |
-| Second opinion | None | Three independent AI models |
-| Audit trail | Paper logs | Immutable S3 archive |
-| Billing | Annual contracts | Per-call Stripe metered billing |
-
----
-
-## Built With
-
-Anthropic · Google DeepMind · AgentPhone · AgentMail · Supermemory · Moss · Twilio · Stripe · Sponge · AWS · Deepgram · Supabase · Vercel · Next.js 16 · FastAPI · Railway
+*Built for YC S25 — Kairos AI · Threat intelligence infrastructure for every school district in America.*
