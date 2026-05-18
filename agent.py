@@ -260,10 +260,31 @@ async def run_threat_agent(
         return results
 
     # Run both branches concurrently
-    (cls2, moss_context), parallel_results = await asyncio.gather(
+    branch_results = await asyncio.gather(
         _branch_moss_claude(),
         _branch_parallel(),
+        return_exceptions=True,
     )
+
+    # Safe unpack branch A: _branch_moss_claude() returns (cls2, ctx) or an Exception
+    branch_a = branch_results[0]
+    if isinstance(branch_a, Exception):
+        pipeline_errors.append("branch_moss_claude")
+        print(f"[{call_id}] WARNING: moss+claude branch failed: {branch_a}")
+        cls2 = classification
+        moss_context = ""
+    else:
+        cls2, moss_context = branch_a
+
+    # Safe unpack branch B: _branch_parallel() returns a list of 4 results or an Exception
+    branch_b = branch_results[1]
+    if isinstance(branch_b, Exception):
+        pipeline_errors.append("branch_parallel")
+        print(f"[{call_id}] WARNING: parallel branch failed: {branch_b}")
+        parallel_results = [None, None, None, None]
+    else:
+        parallel_results = branch_b
+
     geo_res, bayes_res, gemini_res, prior_tips_res = parallel_results
 
     # ── Unpack geocode ────────────────────────────────────────────────────────
@@ -396,7 +417,7 @@ async def run_threat_agent(
     # ── Post-dashboard tasks (fire-and-forget — don't block return) ───────────
     async def _post_dashboard_tasks():
         """OSINT, archive, SMS, email, Stripe — run after dashboard is already updated."""
-        nonlocal pipeline_errors
+        # pipeline_errors is a list (mutable) — mutated via .append(), no nonlocal needed
 
         # Attendance anomaly
         try:
