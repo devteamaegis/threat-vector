@@ -10,16 +10,23 @@ import os
 import httpx
 
 
-async def run_osint(school_name: str, threat_type: str, subject_description: str) -> str:
-    if not school_name:
-        return "No school name provided for OSINT search."
-
-    query = f"{school_name} {threat_type} threat"
-    if subject_description:
-        query += f" {subject_description}"
+async def run_osint(school_name: str, threat_type: str, subject_description: str, named_subject: str = "") -> str:
+    """
+    Run OSINT search. When a named individual is provided (e.g. 'Max Higgins'),
+    searches specifically for that person in addition to the school context.
+    """
+    # Person-specific search takes priority when we have a real name
+    if named_subject and len(named_subject.split()) >= 2:
+        query = f'"{named_subject}" {school_name or ""} threat incident'.strip()
+    elif school_name:
+        query = f"{school_name} {threat_type} threat"
+        if subject_description:
+            query += f" {subject_description}"
+    else:
+        query = f"{threat_type} threat school {subject_description or ''}".strip()
 
     # Try Browser Use with OpenAI (preferred — uses YC OpenAI credits)
-    result = await _browser_use_osint(query, school_name)
+    result = await _browser_use_osint(query, school_name, named_subject)
     if result:
         return result
 
@@ -27,7 +34,7 @@ async def run_osint(school_name: str, threat_type: str, subject_description: str
     return await _ddg_osint(query)
 
 
-async def _browser_use_osint(query: str, school_name: str) -> str:
+async def _browser_use_osint(query: str, school_name: str, named_subject: str = "") -> str:
     openai_key = os.getenv("OPENAI_API_KEY")
     if not openai_key or openai_key == "FILL_IN":
         return ""
@@ -40,16 +47,22 @@ async def _browser_use_osint(query: str, school_name: str) -> str:
 
     try:
         llm = ChatOpenAI(model="gpt-4o-mini", api_key=openai_key, temperature=0)
-        agent = BrowserAgent(
-            task=(
+        if named_subject:
+            task = (
+                f"Search the web for '{named_subject}' to find any public social media, news, or criminal records. "
+                f"Also search for recent incidents at {school_name or 'the school'}. "
+                f"Query: '{query}'. Look at 2-3 results. "
+                f"Return a 2-3 sentence factual summary, or 'No relevant signals found.' Under 100 words."
+            )
+        else:
+            task = (
                 f"Search the web for recent news or social media posts about a potential threat at {school_name}. "
                 f"Search query: '{query}'. "
                 "Look at the first 2-3 news results. "
                 "Return a 2-sentence summary of any relevant findings, "
                 "or 'No relevant public signals found.' if nothing matches. Under 80 words."
-            ),
-            llm=llm,
-        )
+            )
+        agent = BrowserAgent(task=task, llm=llm)
         result = await asyncio.wait_for(agent.run(), timeout=20)
         return f"[Browser Use] {str(result)[:400]}"
     except asyncio.TimeoutError:

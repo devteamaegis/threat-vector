@@ -55,6 +55,70 @@ def geolocate_school(school_name: str) -> tuple[float, float] | None:
         _GEO_CACHE[school] = None
         return None
 
+# ── Spoken address extraction + geocoding ─────────────────────────────────────
+_SPOKEN_DIGITS = {
+    'zero':'0','one':'1','two':'2','three':'3','four':'4',
+    'five':'5','six':'6','seven':'7','eight':'8','nine':'9',
+}
+_STREET_TYPES = r'(?:road|street|avenue|drive|lane|boulevard|way|place|court|circle|blvd|ave|dr|st|rd|ln|ct|pl|highway|hwy)'
+
+def _normalize_spoken_number(tokens: list[str]) -> str:
+    """Convert a list of digit-word tokens to a numeric string. 'one four one five eight' → '14158'."""
+    return ''.join(_SPOKEN_DIGITS.get(t.lower(), t) for t in tokens)
+
+def _extract_spoken_address(transcript: str) -> str | None:
+    """
+    Extract a street address from spoken transcript where the caller read
+    digits individually: 'one four one five eight at Gallup Road' → '14158 Gallup Road'.
+    Also handles normal numeric form: '14158 Gallup Road'.
+    """
+    t = transcript.strip()
+
+    # 1. Normal numeric address: "14158 Gallup Road"
+    m = re.search(
+        rf'\b(\d{{2,6}})\s+((?:[A-Z][a-zA-Z]+\s*){{1,4}}{_STREET_TYPES})\b',
+        t, re.IGNORECASE,
+    )
+    if m:
+        return f"{m.group(1)} {m.group(2).strip()}"
+
+    # 2. Spoken digit-by-digit: "one four one five eight at Gallup Road"
+    digit_word = '|'.join(_SPOKEN_DIGITS.keys())
+    # Match: <digits spoken individually> + optional 'at'/'on' + <street>
+    pattern = (
+        rf'\b((?:(?:{digit_word})\s+){{2,6}})'           # 2-6 spoken digits
+        rf'(?:at\s+|on\s+|in\s+)?'                        # optional preposition
+        rf'((?:[A-Z][a-zA-Z]+\s*){{1,4}}{_STREET_TYPES})\b'  # street name
+    )
+    m2 = re.search(pattern, t, re.IGNORECASE)
+    if m2:
+        digit_tokens = m2.group(1).strip().split()
+        number_str = _normalize_spoken_number(digit_tokens)
+        street = m2.group(2).strip()
+        return f"{number_str} {street}"
+
+    return None
+
+
+def _geocode_address(address: str, call_id: str = "system") -> tuple[float, float] | None:
+    """Geocode a street address via Nominatim (free, no API key needed)."""
+    try:
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"q": address, "format": "json", "limit": 1, "addressdetails": 1},
+            headers={"User-Agent": "ThreatVector/1.0 school-safety-demo"},
+            timeout=6,
+        )
+        if r.ok and r.json():
+            hit = r.json()[0]
+            lat, lng = float(hit["lat"]), float(hit["lon"])
+            print(f"[{call_id}] Address geocode: '{address}' → ({lat:.4f}, {lng:.4f})")
+            return lat, lng
+    except Exception as e:
+        print(f"[{call_id}] WARNING: address geocode failed for '{address}': {e}")
+    return None
+
+
 def _caller_coords(caller_location: dict | None) -> tuple[float, float] | None:
     if not caller_location:
         return None
@@ -68,6 +132,37 @@ def _caller_coords(caller_location: dict | None) -> tuple[float, float] | None:
     if math.isfinite(lat_f) and math.isfinite(lng_f):
         return lat_f, lng_f
     return None
+
+def _extract_named_subject_from_transcript(transcript: str) -> str | None:
+    """
+    Extract a full person name from a transcript using regex patterns.
+    Handles: "threatening Max Higgins", "kill John Smith", "his name is ...", etc.
+    Returns the most likely full name (First Last) or None.
+    """
+    t = transcript.strip()
+    # Patterns that introduce a person's name as the subject of a threat
+    patterns = [
+        # "kill/hurt/shoot/threaten [Name]"
+        r'(?:kill|hurt|shoot|attack|threaten(?:ing)?|going after|find)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
+        # "his name is / her name is / the student named"
+        r'(?:his|her|their)\s+name\s+is\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})',
+        r'(?:student|person|guy|kid|man|woman)\s+named\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})',
+        # "named [Name]" or "called [Name]"
+        r'\bnamed\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})',
+        # "threatening [Name]" at start of phrase
+        r'\b([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:is the target|is going to be|will be)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, t)
+        if m:
+            name = m.group(1).strip()
+            # Sanity check: must be 2 words (First Last), not a common word
+            words = name.split()
+            skip_words = {'The', 'This', 'That', 'School', 'Student', 'Teacher', 'Gun', 'Bomb', 'Knife'}
+            if len(words) >= 2 and not any(w in skip_words for w in words):
+                return name
+    return None
+
 
 def _extract_location_context(classification: dict) -> str | None:
     sources = []
@@ -375,6 +470,20 @@ async def run_threat_agent(
     if location_context:
         cls2["location_context"] = location_context
 
+    # ── Extract and geocode any address mentioned in the transcript ──────────
+    spoken_address = _extract_spoken_address(transcript)
+    if spoken_address:
+        print(f"[{call_id}] Spoken address detected: '{spoken_address}'")
+        cls2["location_context"] = cls2.get("location_context") or spoken_address
+        addr_coords = await asyncio.to_thread(_geocode_address, spoken_address, call_id)
+        if addr_coords:
+            cls2["mentioned_lat"] = addr_coords[0]
+            cls2["mentioned_lng"] = addr_coords[1]
+            # If no caller GPS was available, use mentioned address as the map pin
+            if not resolved_coords:
+                cls2["call_lat"] = addr_coords[0]
+                cls2["call_lng"] = addr_coords[1]
+
     print(
         f"[{call_id}] 3-model: Claude={claude_level} Gemini={gemini_l} Bayes={bayes_level} "
         f"-> final={final_level} ({'CONSENSUS' if three_model_consensus else 'DIVERGENT'})"
@@ -407,6 +516,8 @@ async def run_threat_agent(
         "prior_tips_context":    cls2.get("prior_tips_context"),
         "call_lat":              cls2.get("call_lat"),
         "call_lng":              cls2.get("call_lng"),
+        "mentioned_lat":         cls2.get("mentioned_lat"),
+        "mentioned_lng":         cls2.get("mentioned_lng"),
         "location_context":      cls2.get("location_context"),
         "pipeline_errors":       cls2.get("pipeline_errors"),
     })
@@ -460,10 +571,17 @@ async def run_threat_agent(
         # OSINT (level 3+)
         osint_summary = ""
         if final_level >= 3:
+            # Prefer named_subject (actual full name) over subject_description (physical desc)
+            named_subject = (
+                classification.get("named_subject")
+                or _extract_named_subject_from_transcript(transcript)
+            )
             subject = (
-                classification.get("subject_description", "")
+                named_subject
+                or classification.get("subject_description", "")
                 or classification.get("school_name", "unknown subject")
             )
+            print(f"[{call_id}] Background check subject: '{subject}' (named={bool(named_subject)})")
             bg_result = await asyncio.to_thread(
                 run_paid_background_check,
                 subject,
@@ -474,18 +592,25 @@ async def run_threat_agent(
             )
             classification["background_check"] = bg_result
             classification["background_check_subject"] = subject
-            # Merge DuckDuckGo findings into osint_findings so they appear in the modal
+            # Merge rich findings into osint_findings for display in modal
             findings = bg_result.get("findings", {})
-            ddg_abstract = findings.get("abstract", "")
-            ddg_topics = "; ".join(t for t in findings.get("related_topics", []) if t)[:200]
-            if ddg_abstract or ddg_topics:
-                classification["background_check_findings"] = f"Subject: {subject}. {ddg_abstract} {ddg_topics}".strip()
-            print(f"[{call_id}] Background check: {bg_result.get('findings', {}).get('abstract', 'no abstract')[:80]}")
+            abstract = findings.get("abstract", "")
+            risk = findings.get("risk_assessment", "")
+            court_hits = findings.get("court_records", [])
+            court_str = "; ".join(c.get("case_name", "") for c in court_hits[:2] if c.get("case_name"))
+            bg_summary_parts = [p for p in [abstract, f"Courts: {court_str}" if court_str else "", risk] if p]
+            classification["background_check_findings"] = f"Subject: {subject}. " + " | ".join(bg_summary_parts)
+            print(f"[{call_id}] Background check: {abstract[:100]}")
 
             print(f"[{call_id}] Browser Use: OSINT search...")
             try:
                 osint_summary = await asyncio.wait_for(
-                    run_osint(school, classification.get("threat_type", ""), classification.get("subject_description", "")),
+                    run_osint(
+                        school,
+                        classification.get("threat_type", ""),
+                        classification.get("subject_description", ""),
+                        named_subject=classification.get("background_check_subject", ""),
+                    ),
                     timeout=15,
                 )
             except Exception as e:

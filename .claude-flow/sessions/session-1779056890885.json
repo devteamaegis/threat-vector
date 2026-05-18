@@ -1,6 +1,6 @@
 {
-  "id": "session-1779058648651",
-  "startedAt": "2026-05-17T22:57:28.651Z",
+  "id": "session-1779056890885",
+  "startedAt": "2026-05-17T22:28:10.885Z",
   "cwd": "/Users/ishaansamantray/Desktop/threat-vector",
   "context": {},
   "metrics": {
@@ -8,5 +8,7 @@
     "commands": 0,
     "tasks": 0,
     "errors": 0
-  }
+  },
+  "endedAt": "2026-05-17T22:55:35.884Z",
+  "duration": 1645000
 }

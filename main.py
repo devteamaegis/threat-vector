@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import asyncio
 import os
-import time
+import time as _time
 import json as _json
 import requests as _requests
 from pathlib import Path
@@ -286,7 +286,7 @@ async def demo_live_call(request: Request):
     """Start a live call simulation for demo purposes."""
     body = await request.json()
     transcript = body.get("transcript") or get_demo_transcript()
-    call_id = body.get("call_id", f"demo-{int(time.time())}")
+    call_id = body.get("call_id", f"demo-{int(_time.time())}")
     school = body.get("school", "Westview High School")
     delay_ms = body.get("delay_ms", 150)
     asyncio.create_task(stream_live_call(call_id, transcript, school, delay_ms))
@@ -375,26 +375,33 @@ async def sponge_wallet():
 @app.post("/api/demo/background-check")
 async def demo_background_check(request: Request):
     """
-    Run a demo Sponge background check for a named subject.
-    Used by the Kairos dashboard Wallet tab to show a live transaction.
+    Run a real Sponge-paid background check for a named subject.
+    Uses multi-source search: DuckDuckGo + CourtListener + Bing + Browser-Use.
+    Used by the Kairos dashboard Wallet tab Demo Check button.
     """
-    import asyncio
     body = await request.json()
     subject_name = body.get("subject", "Ishaan Samantray")
     school = body.get("school", "YC Demo")
     threat_level = int(body.get("threat_level", 3))
-    call_id = body.get("call_id", f"demo-{int(__import__('time').time())}")
+    call_id = body.get("call_id", f"demo-{int(_time.time())}")
 
-    from sponge_payments import run_paid_background_check
-    result = await asyncio.to_thread(
-        run_paid_background_check,
-        subject_name,
-        school,
+    from sponge_payments import authorize_background_check, log_transaction_to_supabase
+    from background_check import run_real_background_check
+
+    # 1. Authorize Sponge micropayment
+    receipt = await asyncio.to_thread(authorize_background_check, subject_name, school, call_id, threat_level)
+
+    # 2. Run real multi-source background check
+    findings = await run_real_background_check(subject_name, school, call_id, threat_level)
+
+    # 3. Log to Supabase sponge_transactions
+    await asyncio.to_thread(
+        log_transaction_to_supabase,
+        {**receipt, "findings_summary": f"Subject: {subject_name}. {findings.get('abstract', '')[:400]}"},
         call_id,
-        threat_level,
-        [],
     )
-    return JSONResponse(result)
+
+    return JSONResponse({**receipt, "findings": findings, "check_complete": True})
 
 
 @app.get("/health")
