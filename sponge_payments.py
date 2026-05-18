@@ -14,23 +14,28 @@ def disburse_agent_payment(service: str, amount_cents: int, call_id: str, metada
     Demonstrates autonomous agent-to-agent financial transactions.
     """
     key = os.getenv("SPONGE_API_KEY")
-    wallet_id = os.getenv("SPONGE_WALLET_ID")
 
-    if not key or key == "FILL_IN" or not wallet_id or wallet_id == "FILL_IN":
+    if not key or key == "FILL_IN":
         return None  # Sponge not configured — skip silently
 
+    # wallet_id is optional — Sponge derives it from the API key
+    wallet_id = os.getenv("SPONGE_WALLET_ID") or None
+
     try:
+        payload: dict = {
+            "amount": amount_cents,
+            "currency": "usd",
+            "service": service,
+            "reference": call_id,
+            "metadata": {**metadata, "call_id": call_id},
+        }
+        if wallet_id and wallet_id != "FILL_IN":
+            payload["wallet_id"] = wallet_id
+
         response = requests.post(
             f"{SPONGE_BASE}/payments",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={
-                "wallet_id": wallet_id,
-                "amount": amount_cents,
-                "currency": "usd",
-                "service": service,
-                "reference": call_id,
-                "metadata": {**metadata, "call_id": call_id},
-            },
+            json=payload,
             timeout=8,
         )
         if response.status_code in (200, 201):
