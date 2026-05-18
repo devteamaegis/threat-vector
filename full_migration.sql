@@ -33,7 +33,10 @@ ALTER TABLE tips
   ADD COLUMN IF NOT EXISTS dispatch_brief text,
   ADD COLUMN IF NOT EXISTS osint_findings text,
   ADD COLUMN IF NOT EXISTS prior_tips_context text,
-  ADD COLUMN IF NOT EXISTS pipeline_errors jsonb;
+  ADD COLUMN IF NOT EXISTS pipeline_errors jsonb,
+  ADD COLUMN IF NOT EXISTS call_lat float8,
+  ADD COLUMN IF NOT EXISTS call_lng float8,
+  ADD COLUMN IF NOT EXISTS location_context text;
 
 
 -- === migration_attendance_logs.sql ===

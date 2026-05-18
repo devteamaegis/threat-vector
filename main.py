@@ -70,7 +70,7 @@ app.add_middleware(
 )
 
 
-def _extract_call_fields(body: dict) -> tuple[str, str, str, str, int]:
+def _extract_call_fields(body: dict) -> tuple[str, str, str, str, int, dict | None]:
     """
     Normalize payload from AgentPhone webhook events.
 
@@ -150,7 +150,19 @@ def _extract_call_fields(body: dict) -> tuple[str, str, str, str, int]:
 
     # ── status / event ─────────────────────────────────────────────────────────
     status = event_type or data.get("status") or body.get("status") or ""
-    return str(call_id), str(transcript), str(status).lower(), str(recording_url), call_duration
+    caller_location = (
+        data.get("location")
+        or data.get("caller_location")
+        or data.get("geo")
+        or body.get("location")
+        or body.get("caller_location")
+    )
+    if not caller_location:
+        lat = data.get("call_lat") or data.get("lat") or data.get("latitude") or body.get("call_lat") or body.get("lat") or body.get("latitude")
+        lng = data.get("call_lng") or data.get("lng") or data.get("lon") or data.get("longitude") or body.get("call_lng") or body.get("lng") or body.get("lon") or body.get("longitude")
+        if lat is not None and lng is not None:
+            caller_location = {"lat": lat, "lng": lng}
+    return str(call_id), str(transcript), str(status).lower(), str(recording_url), call_duration, caller_location
 
 
 CALL_ENDED_EVENTS = {
@@ -163,7 +175,7 @@ CALL_ENDED_EVENTS = {
 
 
 # AgentPhone primary webhook path
-async def _process_real_call(call_id: str, transcript: str, recording_url: str, call_duration: int):
+async def _process_real_call(call_id: str, transcript: str, recording_url: str, call_duration: int, caller_location: dict | None = None):
     """
     Wait briefly for AgentPhone to finalize transcript, then fetch via API
     if the webhook delivered an empty transcript, then run the full pipeline.
@@ -188,7 +200,7 @@ async def _process_real_call(call_id: str, transcript: str, recording_url: str, 
         (w for w in transcript.split() if len(w) > 4 and w[0].isupper()), "Unknown School"
     )
     await stream_live_call(call_id, transcript, school_guess, delay_ms=80)
-    await run_threat_agent(call_id, transcript, recording_url or None, call_duration)
+    await run_threat_agent(call_id, transcript, recording_url or None, call_duration, caller_location)
 
 
 @app.post("/webhook/call")
@@ -196,11 +208,11 @@ async def handle_call(request: Request):
     body = await request.json()
     print(f"[webhook RAW] {_json.dumps(body)[:1000]}")
 
-    call_id, transcript, status, recording_url, call_duration = _extract_call_fields(body)
+    call_id, transcript, status, recording_url, call_duration, caller_location = _extract_call_fields(body)
     print(f"[webhook] event={status!r} call_id={call_id!r} duration={call_duration}s transcript_len={len(transcript)}")
 
     if status in CALL_ENDED_EVENTS:
-        asyncio.create_task(_process_real_call(call_id, transcript, recording_url or "", call_duration))
+        asyncio.create_task(_process_real_call(call_id, transcript, recording_url or "", call_duration, caller_location))
         return JSONResponse({"status": "processing", "call_id": call_id})
 
     return JSONResponse({
@@ -225,9 +237,12 @@ async def handle_test(request: Request):
     transcript    = body.get("transcript", "")
     recording_url = body.get("recording_url")
     call_duration = int(body.get("call_duration_seconds", max(5, len(transcript.split()) // 2)))
+    caller_location = body.get("caller_location")
+    if not caller_location and body.get("call_lat") is not None and body.get("call_lng") is not None:
+        caller_location = {"lat": body.get("call_lat"), "lng": body.get("call_lng")}
     if not transcript.strip():
         return JSONResponse({"error": "transcript required"}, status_code=400)
-    asyncio.create_task(run_threat_agent(call_id, transcript, recording_url, call_duration))
+    asyncio.create_task(run_threat_agent(call_id, transcript, recording_url, call_duration, caller_location))
     return JSONResponse({"status": "processing", "call_id": call_id})
 
 
@@ -302,7 +317,7 @@ async def submit_tip(request: Request):
     call_id = f"{tip_source}-{uuid.uuid4().hex[:12]}"
     call_duration_seconds = max(5, len(transcript.split()) // 2)
 
-    asyncio.create_task(run_threat_agent(call_id, transcript, None, call_duration_seconds))
+    asyncio.create_task(run_threat_agent(call_id, transcript, None, call_duration_seconds, None))
     return JSONResponse({"status": "received", "call_id": call_id})
 
 
