@@ -100,22 +100,32 @@ def _extract_spoken_address(transcript: str) -> str | None:
     return None
 
 
-def _geocode_address(address: str, call_id: str = "system") -> tuple[float, float] | None:
-    """Geocode a street address via Nominatim (free, no API key needed)."""
-    try:
-        r = requests.get(
-            "https://nominatim.openstreetmap.org/search",
-            params={"q": address, "format": "json", "limit": 1, "addressdetails": 1},
-            headers={"User-Agent": "ThreatVector/1.0 school-safety-demo"},
-            timeout=6,
-        )
-        if r.ok and r.json():
-            hit = r.json()[0]
-            lat, lng = float(hit["lat"]), float(hit["lon"])
-            print(f"[{call_id}] Address geocode: '{address}' → ({lat:.4f}, {lng:.4f})")
-            return lat, lng
-    except Exception as e:
-        print(f"[{call_id}] WARNING: address geocode failed for '{address}': {e}")
+def _geocode_address(address: str, call_id: str = "system", location_hint: str = "") -> tuple[float, float] | None:
+    """
+    Geocode a street address via Nominatim (free, no API key needed).
+    location_hint — city/state context extracted from transcript (e.g. "Germantown, MD").
+    We try the most-specific query first, then fall back to bare address.
+    """
+    queries: list[str] = []
+    if location_hint:
+        queries.append(f"{address}, {location_hint}")  # "14158 Gallup Drive, Germantown, MD"
+    queries.append(address)                              # bare address as fallback
+
+    for q in queries:
+        try:
+            r = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": q, "format": "json", "limit": 1, "addressdetails": 1},
+                headers={"User-Agent": "ThreatVector/1.0 school-safety-demo"},
+                timeout=6,
+            )
+            if r.ok and r.json():
+                hit = r.json()[0]
+                lat, lng = float(hit["lat"]), float(hit["lon"])
+                print(f"[{call_id}] Address geocode: '{q}' → ({lat:.4f}, {lng:.4f})")
+                return lat, lng
+        except Exception as e:
+            print(f"[{call_id}] WARNING: address geocode failed for '{q}': {e}")
     return None
 
 
@@ -161,6 +171,42 @@ def _extract_named_subject_from_transcript(transcript: str) -> str | None:
             skip_words = {'The', 'This', 'That', 'School', 'Student', 'Teacher', 'Gun', 'Bomb', 'Knife'}
             if len(words) >= 2 and not any(w in skip_words for w in words):
                 return name
+    return None
+
+
+def _extract_city_state_from_text(text: str) -> str | None:
+    """
+    Extract a US city + state mention from free text.
+    Handles patterns like:
+      "in Germantown, Maryland"  → "Germantown, MD"
+      "in Germantown, MD"        → "Germantown, MD"
+      "Germantown Maryland"      → "Germantown, MD"
+    """
+    STATE_ABBR = {
+        'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA',
+        'colorado':'CO','connecticut':'CT','delaware':'DE','florida':'FL','georgia':'GA',
+        'hawaii':'HI','idaho':'ID','illinois':'IL','indiana':'IN','iowa':'IA',
+        'kansas':'KS','kentucky':'KY','louisiana':'LA','maine':'ME','maryland':'MD',
+        'massachusetts':'MA','michigan':'MI','minnesota':'MN','mississippi':'MS',
+        'missouri':'MO','montana':'MT','nebraska':'NE','nevada':'NV','new hampshire':'NH',
+        'new jersey':'NJ','new mexico':'NM','new york':'NY','north carolina':'NC',
+        'north dakota':'ND','ohio':'OH','oklahoma':'OK','oregon':'OR','pennsylvania':'PA',
+        'rhode island':'RI','south carolina':'SC','south dakota':'SD','tennessee':'TN',
+        'texas':'TX','utah':'UT','vermont':'VT','virginia':'VA','washington':'WA',
+        'west virginia':'WV','wisconsin':'WI','wyoming':'WY','district of columbia':'DC',
+    }
+    STATE_NAMES = '|'.join(STATE_ABBR.keys())
+    STATE_CODES = '|'.join(STATE_ABBR.values())
+    # "City, MD" or "City, Maryland"
+    m = re.search(
+        rf'\b([A-Z][a-zA-Z ]+?),?\s+({STATE_CODES}|{STATE_NAMES})\b',
+        text, re.IGNORECASE
+    )
+    if m:
+        city = m.group(1).strip().title()
+        state_raw = m.group(2).strip()
+        state = STATE_ABBR.get(state_raw.lower(), state_raw.upper())
+        return f"{city}, {state}"
     return None
 
 
@@ -471,11 +517,22 @@ async def run_threat_agent(
         cls2["location_context"] = location_context
 
     # ── Extract and geocode any address mentioned in the transcript ──────────
-    spoken_address = _extract_spoken_address(transcript)
+    # Try both the working transcript (translated if needed) and original
+    spoken_address = _extract_spoken_address(working_transcript) or _extract_spoken_address(transcript)
     if spoken_address:
         print(f"[{call_id}] Spoken address detected: '{spoken_address}'")
         cls2["location_context"] = cls2.get("location_context") or spoken_address
-        addr_coords = await asyncio.to_thread(_geocode_address, spoken_address, call_id)
+        # Build a location hint from Claude's classification to improve Nominatim accuracy.
+        # e.g. "Germantown, MD" from location_detail, or city extracted from school_name context.
+        location_hint = (
+            cls2.get("location_detail")           # Claude returns this if caller mentions a city/state
+            or _extract_city_state_from_text(working_transcript)
+            or _extract_city_state_from_text(transcript)
+            or ""
+        )
+        if location_hint:
+            print(f"[{call_id}] Geocoding with location hint: '{location_hint}'")
+        addr_coords = await asyncio.to_thread(_geocode_address, spoken_address, call_id, location_hint)
         if addr_coords:
             cls2["mentioned_lat"] = addr_coords[0]
             cls2["mentioned_lng"] = addr_coords[1]
@@ -516,11 +573,15 @@ async def run_threat_agent(
         "prior_tips_context":    cls2.get("prior_tips_context"),
         "call_lat":              cls2.get("call_lat"),
         "call_lng":              cls2.get("call_lng"),
-        "mentioned_lat":         cls2.get("mentioned_lat"),
-        "mentioned_lng":         cls2.get("mentioned_lng"),
         "location_context":      cls2.get("location_context"),
         "pipeline_errors":       cls2.get("pipeline_errors"),
     })
+    # Geocoded spoken address — separate PATCH so a missing column doesn't break the main enrichment
+    if cls2.get("mentioned_lat") is not None:
+        update_tip_enriched(tip_id, call_id, {
+            "mentioned_lat": cls2["mentioned_lat"],
+            "mentioned_lng": cls2["mentioned_lng"],
+        })
 
     # Alias cls2 as classification for the rest of the pipeline
     classification = cls2
