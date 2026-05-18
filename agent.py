@@ -60,7 +60,7 @@ _SPOKEN_DIGITS = {
     'zero':'0','one':'1','two':'2','three':'3','four':'4',
     'five':'5','six':'6','seven':'7','eight':'8','nine':'9',
 }
-_STREET_TYPES = r'(?:road|street|avenue|drive|lane|boulevard|way|place|court|circle|blvd|ave|dr|st|rd|ln|ct|pl|highway|hwy)'
+_STREET_TYPES = r'(?:road|street|avenue|drive|lane|boulevard|way|place|court|circle|terrace|parkway|trail|loop|run|pass|crossing|ridge|crest|blvd|ave|dr|st|rd|ln|ct|pl|ter|pkwy|trl|hwy|highway)'
 
 def _normalize_spoken_number(tokens: list[str]) -> str:
     """Convert a list of digit-word tokens to a numeric string. 'one four one five eight' → '14158'."""
@@ -177,10 +177,13 @@ def _extract_named_subject_from_transcript(transcript: str) -> str | None:
 def _extract_city_state_from_text(text: str) -> str | None:
     """
     Extract a US city + state mention from free text.
-    Handles patterns like:
+    Requires the city to start with a capital letter in the original text so
+    prepositions like 'in' and 'at' don't get matched as city names.
+
+    Handles:
       "in Germantown, Maryland"  → "Germantown, MD"
       "in Germantown, MD"        → "Germantown, MD"
-      "Germantown Maryland"      → "Germantown, MD"
+      "Germantown, Maryland"     → "Germantown, MD"
     """
     STATE_ABBR = {
         'alabama':'AL','alaska':'AK','arizona':'AZ','arkansas':'AR','california':'CA',
@@ -195,18 +198,60 @@ def _extract_city_state_from_text(text: str) -> str | None:
         'texas':'TX','utah':'UT','vermont':'VT','virginia':'VA','washington':'WA',
         'west virginia':'WV','wisconsin':'WI','wyoming':'WY','district of columbia':'DC',
     }
-    STATE_NAMES = '|'.join(STATE_ABBR.keys())
-    STATE_CODES = '|'.join(STATE_ABBR.values())
-    # "City, MD" or "City, Maryland"
-    m = re.search(
-        rf'\b([A-Z][a-zA-Z ]+?),?\s+({STATE_CODES}|{STATE_NAMES})\b',
-        text, re.IGNORECASE
+    STATE_NAMES_PAT = '|'.join(
+        k.replace(' ', r'\s+') for k in sorted(STATE_ABBR.keys(), key=len, reverse=True)
     )
-    if m:
-        city = m.group(1).strip().title()
-        state_raw = m.group(2).strip()
-        state = STATE_ABBR.get(state_raw.lower(), state_raw.upper())
-        return f"{city}, {state}"
+    STATE_CODES_PAT = r'[A-Z]{2}'  # match any 2-cap abbreviation, validate after
+
+    # Common prepositions/articles that should never be treated as city names
+    _SKIP_WORDS = {'in','at','near','of','the','a','an','to','from','by','on','for','and','or'}
+
+    _SKIP_WORDS = {'in','at','near','of','the','a','an','to','from','by','on','for','and','or',
+                   'school','high','middle','elementary','academy','university','college','institute'}
+    _VALID_CODES = set(STATE_ABBR.values())
+
+    # Strategy: find each state name/code in the text, then look left for the city.
+    # This avoids greedy city patterns swallowing prepositions.
+    state_finder = re.compile(
+        rf'\b({STATE_NAMES_PAT}|(?:[A-Z]{{2}}))\b',
+        re.IGNORECASE,
+    )
+    for sm in state_finder.finditer(text):
+        state_raw = sm.group(1).strip()
+        # Validate state
+        state = STATE_ABBR.get(state_raw.lower())
+        if not state:
+            # 2-letter code must be uppercase in original text
+            if len(state_raw) == 2 and state_raw.isupper() and state_raw in _VALID_CODES:
+                state = state_raw
+        if not state:
+            continue
+
+        # Look at the 80-char prefix before this state match to find the city
+        prefix_start = max(0, sm.start() - 80)
+        prefix = text[prefix_start:sm.start()]
+
+        # Strip trailing comma/space to get candidate city token
+        prefix = re.sub(r'[,\s]+$', '', prefix)
+
+        # The city is the last 1-2 capitalized words in the prefix
+        # (preceded optionally by a preposition like "in"/"at")
+        city_m = re.search(
+            r'(?:(?:in|at|near)\s+)?([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2})$',
+            prefix,
+        )
+        if not city_m:
+            continue
+        city_raw = city_m.group(1).strip()
+        words = city_raw.split()
+        # Reject if any word is a stop/institutional word
+        if any(w.lower() in _SKIP_WORDS for w in words):
+            continue
+        # Must start with uppercase in original text
+        if not city_raw[0].isupper():
+            continue
+        return f"{city_raw}, {state}"
+
     return None
 
 
